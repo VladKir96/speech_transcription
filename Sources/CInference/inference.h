@@ -7,6 +7,7 @@ extern "C" {
 
 typedef struct lc_whisper lc_whisper;
 typedef struct lc_vad lc_vad;
+typedef struct lc_silero_onnx lc_silero_onnx;
 typedef struct lc_translator lc_translator;
 typedef struct lc_nllb lc_nllb;
 typedef struct lc_cancel_flag lc_cancel_flag;
@@ -27,6 +28,10 @@ float lc_whisper_no_speech(lc_whisper *engine, int index);
 lc_vad *lc_vad_open(const char *path);
 float lc_vad_probability(lc_vad *engine, const float *samples, int count);
 void lc_vad_close(lc_vad *engine);
+lc_silero_onnx *lc_silero_onnx_open(const char *path, int sample_rate, char **error);
+float lc_silero_onnx_probability(lc_silero_onnx *engine, const float *samples, int count, char **error);
+void lc_silero_onnx_reset(lc_silero_onnx *engine);
+void lc_silero_onnx_close(lc_silero_onnx *engine);
 
 lc_translator *lc_translator_open(const char *folder, char **error);
 char *lc_translate(lc_translator *engine, const char *text, char **error);

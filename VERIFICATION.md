@@ -1,5 +1,178 @@
 # Verification
 
+## LocalCaption 1.3.0 Whisper Q8_0
+
+The app uses the multilingual Whisper Small and Large-v3 Turbo Q8_0 files published by whisper.cpp at revision `5359861c739e955e79d9a303bcbc70fb988958b1`. The downloaded bytes matched the repository's LFS SHA-256 and file sizes. The two GGML headers encode Q8_0 as `ftype=2007`, which whisper.cpp reads as quantization version 2 and type 7. LocalCaption uses the upstream conversions directly. The original models are MIT licensed. [Whisper.cpp model repository](https://huggingface.co/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1) · [OpenAI Whisper license](https://github.com/openai/whisper/blob/main/LICENSE)
+
+| Artifact | Directory under Models | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| [`ggml-small-q8_0.bin`](https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q8_0.bin) | `small-q8` | 264,464,607 | `49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f` |
+| [`ggml-large-v3-turbo-q8_0.bin`](https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q8_0.bin) | `turbo-q8` | 874,188,075 | `317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1` |
+| [`ggml-small-q5_1.bin`](https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q5_1.bin) | `small` | 190,085,487 | `ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb` |
+| [`ggml-large-v3-turbo-q5_0.bin`](https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin) | `turbo` | 574,041,195 | `394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2` |
+
+The native probe used the bundled whisper.cpp v1.8.3 Metal backend on an Apple M5 Pro with 48 GiB of memory and macOS 27.2.1. The Small variants both reported 12 encoder and 12 decoder layers, 80 mel bands, and a vocabulary of 51,865. Both Turbo variants reported 32 encoder and four decoder layers, 128 mel bands, and a vocabulary of 51,866. All four reported multilingual support, initialized the Metal backend, and correctly autodetected and transcribed the English and Russian regression samples. The app retries on CPU and shows its existing acceleration notice if Metal initialization fails. [whisper.cpp v1.8.3](https://github.com/ggml-org/whisper.cpp/tree/v1.8.3)
+
+Settings still encodes the architecture as `small` or `turbo`. The selected architecture resolves to the checksum-verified Q8 file at session start. With a missing or invalid Q8 file, the app can use verified compatibility weights for that architecture and prompts the user to install or repair the current model. The installer stages each download and verifies it before publication. A shared Whisper actor retains one native recognition context for both sources and releases the previous context before loading a different model. Audio capture, VAD and phrase-completion parameters continue to use their existing values.
+
+### Matched benchmark
+
+All runs used the app's native bridge, Metal, four threads, automatic language detection, and the High Accuracy final decoder with beam size four. Each model ran in its own process with networking denied. The fixture set contains 62.11 seconds across ten clips, with 144 reference words and 727 normalized reference characters. The latency statistics cover 30 warm calls per variant, three per clip. Load time includes the Metal probe and native context initialization. RTF is total decode time divided by input audio time. Peak RSS is whole-process resident memory as reported by macOS. Native model buffers alone used 189.49 MB and 263.87 MB for Small Q5 and Q8, and 573.40 MB and 873.55 MB for Turbo Q5 and Q8.
+
+WER and CER use Levenshtein distance after Unicode case folding and punctuation removal. CER also removes spaces. Accuracy scores use the first warm result from each clip. The Irish-accent, quiet, fast, conversational, and technical fixtures use local macOS speech voices. The noisy microphone fixture uses public Speech Commands microphone recordings with reproducibly added noise. The video fixture is the public archival speech in whisper.cpp's `jfk.wav`. [Speech Commands source](https://www.tensorflow.org/tutorials/audio/simple_audio)
+
+| Variant | WER | CER | RTF | Mean | P95 | Peak RSS | Load |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Small Q5_1 | 2.78% | 0.55% | 0.0355 | 0.220 s | 0.260 s | 489.8 MiB | 0.199 s |
+| Small Q8_0 | 2.78% | 0.55% | 0.0346 | 0.215 s | 0.257 s | 575.2 MiB | 0.226 s |
+| Large-v3 Turbo Q5_0 | 0.00% | 0.00% | 0.1403 | 0.871 s | 0.900 s | 819.0 MiB | 0.279 s |
+| Large-v3 Turbo Q8_0 | 0.00% | 0.00% | 0.1335 | 0.829 s | 0.858 s | 1,131.1 MiB | 0.359 s |
+
+Each cell below shows mean latency in seconds and word edits. All variants detected the correct language on each fixture.
+
+| Fixture | Small Q5_1 | Small Q8_0 | Turbo Q5_0 | Turbo Q8_0 |
+| --- | ---: | ---: | ---: | ---: |
+| English conversation | 0.211 / 0 | 0.205 / 0 | 0.862 / 0 | 0.822 / 0 |
+| Russian conversation | 0.250 / 0 | 0.242 / 0 | 0.889 / 0 | 0.847 / 0 |
+| English technical | 0.224 / 0 | 0.217 / 0 | 0.875 / 0 | 0.833 / 0 |
+| Russian technical | 0.260 / 4 | 0.257 / 4 | 0.900 / 0 | 0.859 / 0 |
+| Fast English | 0.220 / 0 | 0.214 / 0 | 0.868 / 0 | 0.829 / 0 |
+| Irish-accented English | 0.210 / 0 | 0.203 / 0 | 0.863 / 0 | 0.823 / 0 |
+| Slow English with pauses | 0.184 / 0 | 0.180 / 0 | 0.849 / 0 | 0.812 / 0 |
+| Quiet English | 0.210 / 0 | 0.204 / 0 | 0.862 / 0 | 0.825 / 0 |
+| Noisy microphone | 0.203 / 0 | 0.197 / 0 | 0.868 / 0 | 0.817 / 0 |
+| Archival video audio | 0.232 / 0 | 0.227 / 0 | 0.878 / 0 | 0.830 / 0 |
+
+The benchmark found no accuracy gain for Q8 on this corpus. Both Q8 versions had comparable warm inference times and used more resident memory. The corpus is small and primarily synthesized, so these figures describe the checked fixtures and test Mac.
+
+To reproduce, build the native dependencies, obtain the four pinned artifacts above, and extract the three microphone files listed under [Silero matched fixtures](#matched-fixtures). Prepare the clips once and run the second command in a fresh process for each file. Python is a development-only benchmark dependency.
+
+```sh
+python3 Scripts/benchmark-whisper.py .deps/whisper-q8/fixtures --prepare .deps/vad63/speech-commands
+python3 Scripts/benchmark-whisper.py .deps/whisper-q8/fixtures \
+  --model /path/to/ggml-model.bin --beam 4 --repeats 3
+```
+
+### Regression checks
+
+The final offline arm64 suite reported 64 tests across four suites. It exercised both verified Q8 models, automatic English and Russian detection, independent dual-source segmentation, live-style partials, actual MarianMT and NLLB inference, session lifecycle, and invalid files. The migration tests cover a missing Q8 file, same-size corruption, fallback, preference restoration, and explicit rollback. Separate online tests exercised download and integrity verification for both Q8 models and the Silero pins.
+
+The final signed build showed exactly three recognition models in Settings, even with the older files present in its isolated model folder. The Whisper picker offered Small Q8 and Large-v3 Turbo Q8. All three current entries changed from download offers to installed status once the verified files were added. Translation model management remained visible. Both Q8 files were verified in the normal model library, which already held Silero 6.3. Existing preferences and transcript data were preserved.
+
+The signed capture QA copy ran with networking denied and its own model and transcript folders. A machine with only the old Whisper weights could still start capture. After both Q8 variants were added, Small Q8 loaded on Metal for the same architecture selection. A paced English fixture played through the Mac speakers produced a complete MarianMT translation on both System Audio and the built-in microphone. Space muted the microphone while System Audio continued. Switching to NLLB during the same recording saved three subsequent translations with NLLB provenance.
+
+The Turbo Q8 System Audio-only run lasted **5:43** and saved 69 NLLB translations of repeated archival playback. During recording, Settings disabled model switching and removal. The app ended the recording through its normal Stop path, released the system audio tap, and saved the session. Sampled process RSS peaked at 3.75 GiB and stayed near 3.53 GiB during the later playback intervals. These process figures include capture, Whisper, VAD, translation, and the UI. Fixture playback stopped when the completed session was observed.
+
+Live QA showed the floating subtitle control and newest-first captions. It reopened the prior QA history and exported a TXT containing both source labels and the paced original and translation. All three prior sessions and 35 prior caption rows in the seeded history stayed intact. Automated lifecycle tests exercised microphone-only setup, Push-to-Talk, Pause and Resume, and repeated starts and stops. Live timing covers the host's Core Audio process tap and built-in microphone. A longer hardware run, microphone-only Push-to-Talk with live hardware, the ScreenCaptureKit display path, and earlier macOS releases were outside this run.
+
+### Files changed
+
+- `Sources/CaptionCore/Resources/Models.json`, `RollbackModels.json`, `ModelStore.swift`, and `Domain.swift` define and verify the variants while preserving architecture preferences. `Scripts/build-app.sh` packages both manifests.
+- `Sources/LocalCaption/SessionDependencies.swift`, `AppModel.swift`, `PreferencesView.swift`, and `WorkspaceView.swift` implement migration, model selection and compatibility status. `Native/Inference.mm` reports an internal Metal initialization failure through the existing CPU fallback path.
+- `Tests/CaptionCoreTests/InferenceTests.swift`, `VADTests.swift`, `Tests/LocalCaptionTests/SessionStartupTests.swift`, and `Scripts/benchmark-whisper.py` exercise and compare the model variants.
+- `AppResources/Info.plist`, `README.md`, `MODEL-LICENSES.md`, and `VERIFICATION.md` record the release, attributions, results, and [rollback procedure](README.md#upgrading-whisper-from-q5).
+
+## LocalCaption 1.2.1 Silero VAD 6.3
+
+Silero published v6.3 on November 23, 2026, at 09:19 UTC. GitHub verified the signature of release commit `63d4a2a7bfce8cd9bb39ed8fa0afcb5236d73e01`. The release describes changes to short speech and pauses, improved long-context retention, earlier end detection, and fewer false positives. It reports slightly stricter scoring at the same threshold. The inspected multi-rate ONNX graph contains 163 nodes and one conditional across its subgraphs, compared with 689 nodes and 25 conditionals in the official 6.2 ONNX graph. Both declare ONNX opset 16 and IR version 8. [Silero v6.3 release](https://github.com/snakers4/silero-vad/releases/tag/v6.3)
+
+| Asset | Installed path under Models | SHA-256 |
+| --- | --- | --- |
+| [Official 6.3 multi-rate ONNX](https://raw.githubusercontent.com/snakers4/silero-vad/63d4a2a7bfce8cd9bb39ed8fa0afcb5236d73e01/src/silero_vad/data/silero_vad.onnx) | `silero-6.3/silero_vad.onnx` | `f6f4407b41e05e277e7f5cfd9b9ae957b1dfe763c6076a934734c0b448e09b31` |
+| [6.2 GGML rollback](https://huggingface.co/ggml-org/whisper-vad/blob/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin) | `silero/ggml-silero-v6.2.0.bin` | `2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987` |
+
+The 6.3 asset is 2,204,103 bytes. LocalCaption checks the pinned size and SHA-256 before installation and when the file identity, size, or timestamp changes. New streams prefer installed 6.3, use verified 6.2 if 6.3 is unavailable or fails, and fall back to audio-level detection when neither model can run. The same launch can use separate model instances for each source. Downloads remain explicit in Settings → Models. [Model catalog](Sources/CaptionCore/Resources/Models.json) · [6.2 rollback instructions](README.md)
+
+### Native interface and streaming
+
+The standalone arm64 probe loaded both official ONNX graphs with the bundled ONNX Runtime 1.24.4 CPU library and ran 40 sequential windows with batches of one and two at 8 and 16 kHz. No runtime upgrade was required. The names and element types are the same for both versions. The 6.3 graph declares more of the recurrent output shape. The 6.2 graph declares all three dimensions of `stateN` dynamic and returned the same concrete shape in the probe. [Official Silero streaming wrapper](https://github.com/snakers4/silero-vad/blob/v6.3/src/silero_vad/utils_vad.py)
+
+| Port | Type | Shape for 6.3 |
+| --- | --- | --- |
+| `input` | float32 | `[batch, samples]` |
+| `state` | float32 | `[2, batch, 128]` |
+| `sr` | int64 | scalar |
+| `output` | float32 | `[batch, 1]` |
+| `stateN` | float32 | `[2, batch, 128]` |
+
+The native bridge validates the ports and runs a warm-up before giving the handle to a stream. Each source has its own CPU session, zero-initialized recurrent state, and audio context. It processes 512 new samples plus 64 previous samples at 16 kHz. The bridge also supports 256 plus 32 at 8 kHz. The app normalizes Core Audio input to mono 16 kHz and uses batch size one. The Swift wrapper retains fewer than 512 residual samples between 100 ms caption frames. Stream startup, source reconnection, and a marked input discontinuity reset the state. Stream shutdown releases the handle after queued recognition finishes.
+
+The previous app ran 6.2 via whisper.cpp's GGML VAD. It rescored a sliding context and used the maximum of the recent native scores. The new path uses the maximum over the new 32 ms windows available in each 100 ms input block. Both use the existing 0.38 onset and 0.30 continuation thresholds, audio-level gate, up to 320 ms of preroll, and minimum of two voiced frames for a finalized recognition window. The two profiles retain their existing end-silence and maximum-window limits. Whisper recognition consumes those windows, while translation combines compatible text using the separate Phrase Completion Pause.
+
+### Matched fixtures
+
+Each detector received the same 16 kHz mono samples, with the same silence padding, RMS gate of 0.00025, 0.38/0.30 thresholds, and measurement at 100 ms resolution. Regions below have at least two voiced frames and are separated by at least 600 ms. The two ONNX models use identical windowing. The 6.2 GGML column measures the implementation that previously shipped in LocalCaption. The table reports **regions / milliseconds of the fixture envelope left unvoiced** for speech fixtures and **regions / false-positive milliseconds** for pure music, noise, and silence. The speech envelope includes natural and inserted silences. These clips lack frame-level speech annotations, so the envelope gaps describe detector output and cannot establish missed speech, precision, recall, or F1.
+
+| Fixture | 6.2 GGML | 6.2 ONNX | 6.3 ONNX |
+| --- | ---: | ---: | ---: |
+| English | 1 / 317 | 1 / 317 | 1 / 317 |
+| Russian | 1 / 272 | 1 / 272 | 1 / 372 |
+| Slow English | 2 / 1,067 | 2 / 1,067 | 2 / 1,067 |
+| Slow Russian | 2 / 1,122 | 2 / 1,122 | 2 / 1,122 |
+| Short English | 1 / 0 | 1 / 0 | 1 / 0 |
+| Quiet English | 1 / 517 | 1 / 417 | 1 / 417 |
+| Continuous English and Russian | 1 / 1,865 | 1 / 1,965 | 1 / 1,965 |
+| Music | 1 / 400 | 0 / 100 | 0 / 100 |
+| Noise | 0 / 0 | 0 / 0 | 0 / 0 |
+| English with noise | 1 / 0 | 1 / 117 | 1 / 217 |
+| Silence | 0 / 0 | 0 / 0 | 0 / 0 |
+| Archival video audio | 3 / 2,900 | 3 / 2,900 | 4 / 3,400 |
+| Microphone «yes» | 1 / 400 | 1 / 400 | 1 / 500 |
+| Microphone «no» | 1 / 400 | 1 / 500 | 1 / 500 |
+| Microphone «stop» | 1 / 300 | 1 / 500 | 1 / 300 |
+
+Relative to 6.2 GGML, 6.3's onset was 100 ms later on the Russian and slow Russian fixtures, with 200 ms from fixture start to the end of the first voiced frame. The English-with-noise fixture began at the same frame. Its last voiced frame ended 117 ms before the fixture ended with 6.3 and 83 ms after it with 6.2 GGML. The three microphone commands first registered at 200 ms in all versions and each formed one region. The last voiced frame with 6.3 ended 400, 400, and 100 ms before the end of the respective one-second microphone clips. Both shipped detectors retained the three checked key phrases from the same archival audio in Whisper, with three finalized captions for 6.2 and four for 6.3. Thresholds stayed at the existing values.
+
+The microphone examples are public CC BY 4.0 recordings from TensorFlow's Speech Commands sample, extracted unchanged with these local names. [TensorFlow sample archive and tutorial](https://www.tensorflow.org/tutorials/audio/simple_audio) · [Dataset paper](https://arxiv.org/abs/1804.03209)
+
+| Local filename | Entry in `mini_speech_commands.zip` |
+| --- | --- |
+| `yes.wav` | `mini_speech_commands/yes/93ec8b84_nohash_0.wav` |
+| `no.wav` | `mini_speech_commands/no/439c84f4_nohash_1.wav` |
+| `stop.wav` | `mini_speech_commands/stop/b87bdb22_nohash_1.wav` |
+
+Run from the project root with the local paths to the model assets and optional audio fixtures. The 6.2 ONNX control came from the official v6.2 tag, and `jfk.wav` comes from the pinned whisper.cpp checkout. `VADCASE` prints onset and offset for each fixture. [Official 6.2 ONNX control](https://github.com/snakers4/silero-vad/blob/v6.2/src/silero_vad/data/silero_vad.onnx)
+
+```sh
+LOCALCAPTION_TEST_MODELS="$PWD/.deps/test-models" \
+LOCALCAPTION_TEST_NLLB="$PWD/.deps/nllb-prep/LocalCaption-NLLB-200-600M" \
+LOCALCAPTION_TEST_VAD63="$PWD/.deps/vad63/silero_vad.onnx" \
+LOCALCAPTION_TEST_VAD62_ONNX="$PWD/.deps/vad63/silero-v6.2.onnx" \
+LOCALCAPTION_TEST_VAD62_GGML="$PWD/.deps/test-models/ggml-silero-v6.2.0.bin" \
+LOCALCAPTION_TEST_VAD_PLAYBACK="$PWD/.deps/whisper/samples/jfk.wav" \
+LOCALCAPTION_TEST_VAD_MICROPHONE="$PWD/.deps/vad63/speech-commands" \
+LOCALCAPTION_TEST_VAD_STRESS=1 ./Scripts/test.sh
+```
+
+### Performance on Apple M5 Pro
+
+The standalone arm64 process replayed the same English recording for 300 audio seconds using the app's 100 ms blocks. RSS includes the process and loaded libraries. CPU time covers the whole benchmark process.
+
+| Runtime | Mean per block | P95 per block | Peak process RSS | CPU time |
+| --- | ---: | ---: | ---: | ---: |
+| 6.2 GGML | 0.486 ms | 0.549 ms | 57.0 MiB | 1.466 s |
+| 6.2 ONNX | 0.195 ms | 0.249 ms | 43.8 MiB | 0.603 s |
+| 6.3 ONNX | 0.179 ms | 0.229 ms | 35.8 MiB | 0.555 s |
+
+### Automated verification
+
+The arm64 suite reported 60 tests across four suites with networking denied. The optional network test ran separately and downloaded both official pins, replaced a damaged copy of each, and opened both installed models. The offline suite exercised actual Whisper, MarianMT, and NLLB inference, both capture sample-rate conversions, invalid models and frame sizes, state reset and separation, session lifecycle, and translation phrase aggregation. The 6.3 stress test processed 36,000 blocks representing 30 audio minutes on each of two concurrent detector instances in 3.70 seconds. This test fed audio at compute speed. The rollback regression suite also passed against the original 6.2 GGML backend. The pinned 6.2 implementation is in the current source tree and baseline commit `4cca215`.
+
+### Live verification on macOS 27.2.1
+
+- The signed QA build ran with network access denied and an isolated transcript database. The Automatic System Audio source used the Core Audio process tap. The built-in microphone used the HAL input. System Audio transcribed English YouTube playback. Speech played through the Mac's speakers reached both inputs, and the paced English fixture produced one complete MarianMT translation in each lane. Muting the microphone left System Audio running.
+- The first session recorded for **30:04 before Pause** and finished at **30:21** after Resume. System Audio detected a paced Russian sentence after an extended quiet interval, saved translations from about a minute of archival playback, and detected the final English fixture at 28:41 and after Resume. The session saved 31 caption rows. The QA process averaged 9.0% of one core across 23 samples, with a sampled peak RSS of 2.39 GiB during playback and about 1.90 GiB late in the quiet interval. Those figures include capture, Whisper, translation, and the UI.
+- Pause and Stop released the system audio tap. Resume started a fresh 6.3 detector, and the next new session initialized 6.3 separately for both sources. Each lane saved the paced sentence and its translation on restart. The rollback launch selected 6.2 for both inputs, saved System Audio captions, and closed normally. The two QA app processes exited after Stop and Quit.
+- The workspace release passed strict app-bundle signature verification. The verified 6.3 model was installed in the existing LocalCaption model library alongside the original 6.2 file. A normal launch of 1.2.1 uses 6.3 for new streams with neural VAD enabled. Quit before applying the 6.2 launch override.
+
+The live endurance run used System Audio throughout its initial 30-minute interval and the microphone during the opening dual-source check. The live microphone source received controlled playback through speakers. A 30-minute continuous dual-source run, spontaneous spoken conversation, external microphones, ScreenCaptureKit display capture, and earlier macOS releases were outside this live run. Live translation used MarianMT. NLLB ran in the offline automated suite.
+
+### Files changed
+
+- `Native/Inference.mm` and `Sources/CInference/inference.h` implement and expose the native bridge. `Scripts/build-app.sh` and `Scripts/test.sh` rebuild the bridge after source or header changes.
+- `Sources/CaptionCore/Inference.swift`, `Streaming.swift`, and `Sources/LocalCaption/AppModel.swift` wire streaming inference, source lifecycle, and fallback. `Sources/CaptionCore/ModelStore.swift` and `Resources/Models.json` pin and validate the models.
+- `Tests/CaptionCoreTests/InferenceTests.swift` and `VADTests.swift` cover conversion, downloads, graph validation, streaming, comparison, and endurance. `AppResources/Info.plist`, `MODEL-LICENSES.md`, and `README.md` carry the release metadata, attribution, installation, and rollback.
+
 ## LocalCaption 1.2.0 offline translation engines
 
 The arm64 build uses the official CTranslate2 4.6.3 CPU dylib for NLLB-200 Distilled 600M and the existing ONNX Runtime backend for MarianMT. The native wrapper uses SentencePiece and forces the requested NLLB target token. The prepared folder was reproduced from the pinned Meta safetensors revision and matched all eight release checksums. Its installed file size is 650,705,113 bytes. [Meta model card](https://huggingface.co/facebook/nllb-200-distilled-600M) · [CTranslate2 Transformers conversion](https://opennmt.net/CTranslate2/guides/transformers.html)

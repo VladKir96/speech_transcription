@@ -321,7 +321,11 @@ struct PreferencesView: View {
     private var models: some View {
         Form {
             Section("Speech recognition") {
-                ForEach(model.modelCatalog.filter { $0.kind == .speech }) { modelRow($0) }
+                ForEach(WhisperModel.allCases) { selection in
+                    if let item = model.modelCatalog.first(where: { $0.id == selection.q8ID }) {
+                        modelRow(item, speech: selection)
+                    }
+                }
             }
             Section("Voice activity detection") {
                 ForEach(model.modelCatalog.filter { $0.kind == .vad }) { modelRow($0) }
@@ -331,9 +335,10 @@ struct PreferencesView: View {
             }
         }
         .formStyle(.grouped)
+        .task { await model.refreshModels() }
     }
 
-    private func modelRow(_ item: ModelDescriptor) -> some View {
+    private func modelRow(_ item: ModelDescriptor, speech: WhisperModel? = nil) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -343,7 +348,7 @@ struct PreferencesView: View {
                         Text(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file))
                         Text("·")
                         Text(model.installed.contains(item.id) ? "Installed disk usage" : item.requiresImport ? "Folder size" : "Download size")
-                        if item.id == model.settings.options.model.id { Text("· Selected") }
+                        if speech == model.settings.options.model { Text("· Selected") }
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -358,10 +363,8 @@ struct PreferencesView: View {
                 if model.downloadProgress[item.id] != nil {
                     Button("Cancel") { model.cancelInstall(item) }
                 } else if model.installed.contains(item.id) {
-                    if item.kind == .speech && item.id != model.settings.options.model.id {
-                        Button("Select") {
-                            if let modelType = WhisperModel(rawValue: item.id) { model.settings.options.model = modelType }
-                        }
+                    if let speech, speech != model.settings.options.model {
+                        Button("Select") { model.settings.options.model = speech }
                         .disabled(model.sessionActive)
                     }
                     Button("Remove…") { removal = item }.disabled(model.sessionActive || model.translationRetryActive)

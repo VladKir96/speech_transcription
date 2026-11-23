@@ -33,7 +33,8 @@ public enum RecognitionProfile: String, CaseIterable, Codable, Identifiable, Sen
 public enum WhisperModel: String, CaseIterable, Codable, Identifiable, Sendable {
     case small, turbo
     public var id: String { rawValue }
-    public var title: String { self == .small ? "Whisper Small" : "Whisper Large-v3 Turbo" }
+    public var q8ID: String { "\(rawValue)-q8" }
+    public var title: String { self == .small ? "Whisper Small (Q8)" : "Whisper Large-v3 Turbo (Q8)" }
 }
 
 public enum TranslationModel: String, CaseIterable, Codable, Identifiable, Sendable {

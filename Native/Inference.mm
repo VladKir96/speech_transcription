@@ -7,6 +7,7 @@
 #include "onnxruntime_cxx_api.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -25,10 +26,16 @@ static void set_error(char **out, const char *message) {
 
 // whisper.cpp changes a shared ggml log callback while initializing its backends.
 static std::mutex backend_initialization;
+static thread_local bool whisper_gpu_init_failed = false;
 
 static void configure_whisper_logging() {
     static const bool configured = [] {
         whisper_log_set([](ggml_log_level level, const char *message, void *) {
+            // whisper.cpp can create a CPU context after a failed GPU initialization.
+            if (std::strstr(message, "whisper_backend_init_gpu:")
+                && (std::strstr(message, "no GPU found") || std::strstr(message, "failed to initialize"))) {
+                whisper_gpu_init_failed = true;
+            }
             if (level >= GGML_LOG_LEVEL_WARN) {
                 static os_log_t log = os_log_create("local.caption", "whisper-native");
                 os_log_with_type(log, level >= GGML_LOG_LEVEL_ERROR ? OS_LOG_TYPE_ERROR : OS_LOG_TYPE_DEFAULT,
@@ -63,8 +70,13 @@ lc_whisper *lc_whisper_open(const char *path, bool use_gpu, char **error) {
             configure_whisper_logging();
             auto options = whisper_context_default_params();
             options.use_gpu = use_gpu;
+            whisper_gpu_init_failed = false;
             std::unique_ptr<whisper_context, decltype(&whisper_free)> context(
                 whisper_init_from_file_with_params(path, options), whisper_free);
+            if (use_gpu && whisper_gpu_init_failed) {
+                set_error(error, "The Whisper Metal backend could not initialize.");
+                return nullptr;
+            }
             if (!context) {
                 set_error(error, "Whisper could not load the model. Reinstall it in Settings.");
                 return nullptr;
@@ -192,7 +204,7 @@ public:
     }
 };
 
-static Ort::Env &translation_environment() {
+static Ort::Env &inference_environment() {
     static Ort::Env environment = [] {
         Ort::Env configured(ORT_LOGGING_LEVEL_ERROR, "LocalCaption");
         configured.DisableTelemetryEvents();
@@ -200,6 +212,115 @@ static Ort::Env &translation_environment() {
     }();
     return environment;
 }
+
+static Ort::SessionOptions silero_options() {
+    Ort::SessionOptions options;
+    options.SetIntraOpNumThreads(1);
+    options.SetInterOpNumThreads(1);
+    return options;
+}
+
+static constexpr const char *silero_inputs[] = {"input", "state", "sr"};
+static constexpr const char *silero_outputs[] = {"output", "stateN"};
+
+static void validate_silero_port(Ort::Session &session, bool input, const char *expected,
+                                 ONNXTensorElementDataType element, const std::vector<int64_t> &dimensions) {
+    Ort::AllocatorWithDefaultOptions allocator;
+    const auto count = input ? session.GetInputCount() : session.GetOutputCount();
+    for (size_t i = 0; i < count; ++i) {
+        const auto name = input ? session.GetInputNameAllocated(i, allocator) : session.GetOutputNameAllocated(i, allocator);
+        if (std::strcmp(expected, name.get()) != 0) continue;
+        const auto type = input ? session.GetInputTypeInfo(i) : session.GetOutputTypeInfo(i);
+        const auto tensor = type.GetTensorTypeAndShapeInfo();
+        const auto shape = tensor.GetShape();
+        if (tensor.GetElementType() == element && shape.size() == dimensions.size()
+            && std::equal(shape.begin(), shape.end(), dimensions.begin(), [](auto actual, auto required) {
+                return actual == -1 || actual == required;
+            })) return;
+        throw std::runtime_error(std::string("Unsupported Silero tensor type or shape for ") + expected);
+    }
+    throw std::runtime_error(std::string("Missing Silero tensor ") + expected);
+}
+
+struct lc_silero_onnx {
+    int64_t sample_rate;
+    int frame_size;
+    int context_size;
+    Ort::Session session;
+    std::array<float, 576> audio{};
+    std::array<float, 256> state{}, next_state{};
+    float probability = 0;
+    std::array<Ort::Value, 3> input {Ort::Value{nullptr}, Ort::Value{nullptr}, Ort::Value{nullptr}};
+    std::array<Ort::Value, 2> output {Ort::Value{nullptr}, Ort::Value{nullptr}};
+
+    lc_silero_onnx(const char *path, int rate)
+        : sample_rate(rate), frame_size(rate == 16000 ? 512 : 256), context_size(frame_size / 8),
+          session(inference_environment(), path, silero_options()) {
+        const int64_t audio_shape[] = {1, frame_size + context_size};
+        const int64_t state_shape[] = {2, 1, 128};
+        const int64_t score_shape[] = {1, 1};
+        constexpr auto f32 = ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+        if (session.GetInputCount() != input.size() || session.GetOutputCount() != output.size())
+            throw std::runtime_error("Unexpected number of Silero ONNX inputs or outputs");
+        validate_silero_port(session, true, "input", f32, {1, audio_shape[1]});
+        validate_silero_port(session, true, "state", f32, {2, 1, 128});
+        validate_silero_port(session, true, "sr", ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, {});
+        validate_silero_port(session, false, "output", f32, {1, 1});
+        validate_silero_port(session, false, "stateN", f32, {2, 1, 128});
+        auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        input[0] = Ort::Value::CreateTensor<float>(memory, audio.data(), audio_shape[1], audio_shape, 2);
+        input[1] = Ort::Value::CreateTensor<float>(memory, state.data(), state.size(), state_shape, 3);
+        input[2] = Ort::Value::CreateTensor<int64_t>(memory, &sample_rate, 1, nullptr, 0);
+        output[0] = Ort::Value::CreateTensor<float>(memory, &probability, 1, score_shape, 2);
+        output[1] = Ort::Value::CreateTensor<float>(memory, next_state.data(), next_state.size(), state_shape, 3);
+        const std::array<float, 512> silence{};
+        run(silence.data());
+        reset();
+    }
+
+    void reset() {
+        audio.fill(0);
+        state.fill(0);
+    }
+
+    float run(const float *samples) {
+        std::copy_n(samples, frame_size, audio.begin() + context_size);
+        session.Run(Ort::RunOptions{nullptr}, silero_inputs, input.data(), input.size(),
+                    silero_outputs, output.data(), output.size());
+        if (!std::isfinite(probability) || probability < 0 || probability > 1)
+            throw std::runtime_error("Silero ONNX returned an invalid speech probability");
+        state = next_state;
+        std::copy_n(samples + frame_size - context_size, context_size, audio.begin());
+        return probability;
+    }
+};
+
+lc_silero_onnx *lc_silero_onnx_open(const char *path, int sample_rate, char **error) {
+    try {
+        if (!path || !*path || (sample_rate != 16000 && sample_rate != 8000))
+            throw std::invalid_argument("Silero ONNX requires a model path and an 8 or 16 kHz stream");
+        return new lc_silero_onnx(path, sample_rate);
+    } catch (const std::exception &exception) {
+        set_error(error, exception.what());
+        return nullptr;
+    }
+}
+
+float lc_silero_onnx_probability(lc_silero_onnx *engine, const float *samples, int count, char **error) {
+    try {
+        if (!engine || !samples || count != engine->frame_size)
+            throw std::invalid_argument("Incorrect Silero ONNX frame size for the configured sample rate");
+        if (!std::all_of(samples, samples + count, [](float sample) { return std::isfinite(sample); }))
+            throw std::invalid_argument("Nonfinite PCM in the Silero ONNX frame");
+        return engine->run(samples);
+    } catch (const std::exception &exception) {
+        set_error(error, exception.what());
+        return -1;
+    }
+}
+
+void lc_silero_onnx_reset(lc_silero_onnx *engine) { if (engine) engine->reset(); }
+void lc_silero_onnx_close(lc_silero_onnx *engine) { delete engine; }
 
 static NSDictionary *json_dictionary(const std::string &path) {
     NSString *filename = [NSString stringWithUTF8String:path.c_str()];
@@ -235,7 +356,7 @@ struct lc_translator {
         options.SetIntraOpNumThreads(3);
         options.SetInterOpNumThreads(1);
         options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-        auto &env = translation_environment();
+        auto &env = inference_environment();
         encoder = std::make_unique<Graph>(env, folder + "/encoder_model_quantized.onnx", options);
         decoder = std::make_unique<Graph>(env, folder + "/decoder_model_quantized.onnx", options);
         cached = std::make_unique<Graph>(env, folder + "/decoder_with_past_model_quantized.onnx", options);

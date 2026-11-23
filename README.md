@@ -7,7 +7,7 @@ LocalCaption is a native Apple Silicon macOS app for live transcription of app p
 - Apple Silicon Mac with macOS 14 or later.
 - Xcode 16 or later, or compatible Apple Command Line Tools with Swift 6, for building.
 - CMake 3.20 or later. The bootstrap script can download a pinned portable CMake.
-- About 1.2 GB for the Whisper, Silero, and MarianMT downloads. Optional NLLB-200 installation uses another 651 MB.
+- About 1.5 GB for both Whisper Q8 models, Silero 6.3, and both MarianMT directions. Optional NLLB-200 installation uses another 651 MB.
 
 The app uses SwiftUI, ScreenCaptureKit, Core Audio, Accelerate, Metal, and the system SQLite library. It bundles whisper.cpp, SentencePiece, ONNX Runtime, and CTranslate2 for arm64. The finished app runs without Python, Docker, a package manager, or a server. See [model and runtime licenses](MODEL-LICENSES.md).
 
@@ -25,12 +25,24 @@ On Command Line Tools with the macOS 27 SDK and no SwiftUI macro plugin, the scr
 
 ## First run
 
-1. Open **Settings → Models** and download **Whisper Small** or **Whisper Large-v3 Turbo**. Small is the default. If you download Turbo only, select it in Models or Recognition.
-2. Download **Silero VAD** for neural speech detection. The app uses an audio-level detector while Silero is unavailable.
+1. Open **Settings → Models** and download **Whisper Small (Q8)** or **Whisper Large-v3 Turbo (Q8)**. Small is the default. If you download Turbo only, select it in Models or Recognition.
+2. Download **Silero VAD 6.3** in **Settings → Models** for neural speech detection. New capture streams prefer the signed-release 6.3 ONNX model when installed. The existing **Silero VAD 6.2** installation remains available as a fallback. An audio-level detector handles sessions without a usable Silero model.
 3. In **Settings → Audio**, enable the desired sources and choose a microphone or **System Default**. For System Audio, **Automatic** uses Core Audio and the **System Audio Recording Only** grant on macOS 14.2 and later. **ScreenCaptureKit** uses the primary display and the **Screen & System Audio Recording** grant. **macOS display picker** lets you select a display through Apple’s sharing UI. Automatic uses ScreenCaptureKit display discovery on macOS 14.0 and 14.1.
 4. Open **Live**, choose a profile, and click **Start Session**. Each lane shows capture status and input level. Use **Pause**, **Resume**, and **Stop** from the toolbar.
 
 Model downloads begin after you click **Download**. Canceling discards the incomplete installation. The installer checks file size and SHA-256 before making a model available. Once your models are installed, you can disconnect from the network and start new sessions. LocalCaption creates no raw audio files and sends no audio, transcript, analytics, or inference requests over the network.
+
+## Upgrading Whisper from Q5
+
+Download the Q8 variant for your saved model choice under **Settings → Models**. The next session uses the verified Q8 file. Existing compatibility files are preserved on disk and can still serve as a fallback if a current file is unavailable.
+
+To use an installed Q5 model, finish the session, quit LocalCaption, and launch it from the workspace with the rollback option.
+
+```sh
+open -n -a "$PWD/dist/LocalCaption.app" --env LOCALCAPTION_WHISPER_QUANTIZATION=q5
+```
+
+Relaunch normally to return to Q8. If the Q5 file was removed, restore the pinned file to its original Models subfolder before using the override. The model choice and saved history remain available with either version. [Artifacts, checksums, and Q5/Q8 comparison](VERIFICATION.md#localcaption-130-whisper-q8_0)
 
 ## Microphone control
 
@@ -66,7 +78,8 @@ The default data folder is `~/Library/Application Support/LocalCaption`. Previou
 
 - On macOS 14.2 and later, Automatic uses a native Core Audio process tap that captures playback from other apps. ScreenCaptureKit attaches only an audio output to its display filter. A separate Core Audio HAL unit captures the selected microphone.
 - Both sources normalize to 16 kHz mono PCM on a shared monotonic timeline. Each has independent VAD, speech windows, partial captions, and bounded audio queues. A shared Whisper actor serializes native inference. On overload the capture queue reports skipped input, and completed caption batches are saved independently.
-- Whisper Small Q5_1 and Large-v3 Turbo Q5_0 use Metal where available. Low Latency asks for a partial after roughly one second of buffered speech. High Accuracy uses a longer window, a longer pause threshold, and beam search for final results.
+- Silero 6.3 uses the existing ONNX Runtime CPU library. Per-source 32 ms windows carry acoustic context and recurrent state through each stream. The capture pipeline retains its 100 ms segmentation cadence and the existing Phrase Completion Pause.
+- Whisper Small and Large-v3 Turbo use Q8_0 weights and Metal where available. Low Latency asks for a partial after roughly one second of buffered speech. High Accuracy uses a longer window, a longer pause threshold, and beam search for final results.
 - Marian OPUS-MT runs in ONNX Runtime's CPU execution provider. NLLB-200 Distilled 600M runs in CTranslate2 with int8 weights and two CPU threads. Both use SentencePiece. The translation worker loads only the engine needed by the next request and keeps it warm across consecutive requests. SQLite holds up to 64 pending translations per session. When the queue is full or a request exceeds the stop deadline, the original remains saved and the translation can be retried.
 - The live UI keeps the latest 240 finalized captions per lane. Earlier captions can be loaded from SQLite. History pages results.
 
@@ -79,7 +92,15 @@ LOCALCAPTION_TEST_MODELS="$HOME/Library/Application Support/LocalCaption/Models"
   LOCALCAPTION_TEST_NLLB="/path/to/LocalCaption-NLLB-200-600M" ./Scripts/test.sh
 ```
 
-Install all five models before the second command. It uses actual arm64 Whisper, Silero and Marian inference with English and Russian fixtures. To verify the explicit Silero download separately, run `LOCALCAPTION_TEST_DOWNLOAD=1 ./Scripts/test.sh --filter publishedSileroDownload`. See [verification results and acceptance procedure](VERIFICATION.md).
+Install both Whisper Q8 models, Silero and Marian models before the second command. It uses actual arm64 inference with English and Russian fixtures. Set `LOCALCAPTION_TEST_Q5` to a directory containing both legacy Whisper files to exercise migration. To verify the Q8 downloads separately, run `LOCALCAPTION_TEST_Q8_DOWNLOAD=1 ./Scripts/test.sh --filter publishedWhisperDownloads`. The Silero download check uses `LOCALCAPTION_TEST_DOWNLOAD=1 ./Scripts/test.sh --filter publishedSileroDownload`. [Benchmark and regression results](VERIFICATION.md)
+
+To use the Silero rollback option, keep the pinned 6.2 file in its original Models subfolder. Finish the current session, quit LocalCaption, and launch it from the workspace.
+
+```sh
+open -n -a "$PWD/dist/LocalCaption.app" --env LOCALCAPTION_VAD_VERSION=6.2
+```
+
+Relaunch normally to use the preferred installed model again.
 
 ## Limitations and troubleshooting
 

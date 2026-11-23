@@ -27,7 +27,8 @@ public struct ModelDescriptor: Codable, Identifiable, Sendable {
 public actor ModelStore {
     public nonisolated let directory: URL
     public nonisolated let catalog: [ModelDescriptor]
-    private var verifiedSpeechModels: [String: FileStamp] = [:]
+    private nonisolated let rollbackCatalog: [ModelDescriptor]
+    private var verifiedSingleFiles: [String: FileStamp] = [:]
     private var verifiedTranslations: [String: [String: FileStamp]] = [:]
 
     private struct FileStamp: Equatable {
@@ -38,31 +39,75 @@ public actor ModelStore {
 
     public init(directory: URL) throws {
         self.directory = directory
-        let manifest = Bundle.main.url(forResource: "Models", withExtension: "json")
-            ?? Bundle.module.url(forResource: "Models", withExtension: "json")
-        guard let manifest else { throw CaptionFailure("The model catalog is missing from this build.") }
-        catalog = try JSONDecoder().decode([ModelDescriptor].self, from: Data(contentsOf: manifest))
+        func readCatalog(_ name: String) throws -> [ModelDescriptor] {
+            let manifest = Bundle.main.url(forResource: name, withExtension: "json")
+                ?? Bundle.module.url(forResource: name, withExtension: "json")
+            guard let manifest else { throw CaptionFailure("The model catalog is missing from this build.") }
+            return try JSONDecoder().decode([ModelDescriptor].self, from: Data(contentsOf: manifest))
+        }
+        catalog = try readCatalog("Models")
+        rollbackCatalog = try readCatalog("RollbackModels")
+    }
+
+    nonisolated func descriptor(_ id: String) -> ModelDescriptor? {
+        catalog.first { $0.id == id } ?? rollbackCatalog.first { $0.id == id }
     }
 
     public func installedIDs() -> Set<String> {
         Set(catalog.filter { model in
-            model.requiresImport ? (try? verifiedTranslationModel(model.id)) != nil : installed(model)
+            if model.kind == .vad || model.kind == .speech { return (try? verifiedFile(model)) != nil }
+            return model.requiresImport ? (try? verifiedTranslationModel(model.id)) != nil : installed(model)
         }.map(\.id))
     }
 
     public func path(_ id: String) -> URL? {
-        guard let model = catalog.first(where: { $0.id == id }), installed(model) else { return nil }
+        guard let model = descriptor(id), installed(model) else { return nil }
         let folder = directory.appendingPathComponent(id, isDirectory: true)
         if model.kind == .translation { return folder }
         return model.assets.first.map { folder.appendingPathComponent($0.name) }
     }
 
-    public func verifiedSpeechModel(_ id: String) throws -> URL {
-        guard let model = catalog.first(where: { $0.id == id && $0.kind == .speech }),
-              let asset = model.assets.first else {
+    private func verifiedSpeechModel(_ id: String) throws -> (url: URL, model: ModelDescriptor) {
+        guard let model = descriptor(id), model.kind == .speech else {
             throw CaptionFailure("The selected speech model is missing from the model catalog.")
         }
-        let file = directory.appendingPathComponent(id, isDirectory: true).appendingPathComponent(asset.name)
+        return (try verifiedFile(model), model)
+    }
+
+    public func speechModel(_ selection: WhisperModel, preferLegacy: Bool = false) throws
+        -> (url: URL, model: ModelDescriptor) {
+        if preferLegacy {
+            if let legacy = try? verifiedSpeechModel(selection.id) { return legacy }
+            try Task.checkCancellation()
+            throw CaptionFailure("The requested speech model is unavailable. Restore its file or relaunch LocalCaption normally.")
+        }
+        do {
+            return try verifiedSpeechModel(selection.q8ID)
+        } catch {
+            try Task.checkCancellation()
+            if let legacy = try? verifiedSpeechModel(selection.id) { return legacy }
+            try Task.checkCancellation()
+            throw error
+        }
+    }
+
+    public func voiceActivityModels(preferLegacy: Bool = false) -> [URL] {
+        let ids = preferLegacy ? ["silero"] : ["silero-6.3", "silero"]
+        return ids.compactMap { id in
+            guard let model = descriptor(id),
+                  FileManager.default.fileExists(atPath: directory.appendingPathComponent(id).path) else { return nil }
+            do { return try verifiedFile(model) }
+            catch {
+                Logger(subsystem: "local.caption", category: "models")
+                    .warning("Skipping invalid VAD model \(id, privacy: .public); \(error.localizedDescription, privacy: .private)")
+                return nil
+            }
+        }
+    }
+
+    private func verifiedFile(_ model: ModelDescriptor) throws -> URL {
+        guard let asset = model.assets.first else { throw CaptionFailure("The model file is missing from the catalog.") }
+        let file = directory.appendingPathComponent(model.id, isDirectory: true).appendingPathComponent(asset.name)
         guard FileManager.default.isReadableFile(atPath: file.path) else {
             throw CaptionFailure("Install \(model.name) in Settings → Models before starting, or check that its file is readable.")
         }
@@ -76,10 +121,10 @@ public actor ModelStore {
         } else {
             stamp = nil
         }
-        let needsValidation = verifiedSpeechModels[id] != stamp
+        let needsValidation = verifiedSingleFiles[model.id] != stamp
         if stamp == nil || needsValidation {
             try Self.validate(file, asset: asset)
-            verifiedSpeechModels[id] = stamp
+            verifiedSingleFiles[model.id] = stamp
         }
         return file
     }
@@ -120,7 +165,7 @@ public actor ModelStore {
     }
 
     public func remove(_ model: ModelDescriptor) throws {
-        verifiedSpeechModels[model.id] = nil
+        verifiedSingleFiles[model.id] = nil
         verifiedTranslations[model.id] = nil
         let folder = directory.appendingPathComponent(model.id, isDirectory: true)
         if FileManager.default.fileExists(atPath: folder.path) {
@@ -216,7 +261,7 @@ public actor ModelStore {
         } else {
             try manager.moveItem(at: stage, to: destination)
         }
-        verifiedSpeechModels[model.id] = nil
+        verifiedSingleFiles[model.id] = nil
         verifiedTranslations[model.id] = nil
     }
 

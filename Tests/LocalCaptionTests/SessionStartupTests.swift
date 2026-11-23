@@ -71,6 +71,19 @@ import Testing
     #expect(reopened.settings.options.translationModel == .nllb)
 }
 
+@Test @MainActor func whisperSelectionRestoresTheArchitectureFromExistingPreferences() throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let domain = "local.caption.tests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: domain))
+    defer { defaults.removePersistentDomain(forName: domain) }
+    let initial = AppModel(dataFolder: folder, defaults: defaults)
+    initial.settings.options.model = .turbo
+    let reopened = AppModel(dataFolder: folder, defaults: try #require(UserDefaults(suiteName: domain)))
+    #expect(reopened.settings.options.model == .turbo)
+    #expect(reopened.settings.options.model.id == "turbo")
+    #expect(reopened.settings.options.model.q8ID == "turbo-q8")
+}
+
 @Suite @MainActor
 struct SessionStartupTests {
     @Test(arguments: [Set([AudioSource.microphone]), [.system], Set(AudioSource.allCases)])
@@ -224,9 +237,9 @@ struct SessionStartupTests {
         let rig = try await Rig(verifyModel: true)
         if mode != "missing" {
             let store = try #require(rig.model.modelStore)
-            let model = try #require(store.catalog.first { $0.id == "small" })
+            let model = try #require(store.catalog.first { $0.id == WhisperModel.small.q8ID })
             let asset = try #require(model.assets.first)
-            let folder = store.directory.appendingPathComponent("small")
+            let folder = store.directory.appendingPathComponent(model.id)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let file = folder.appendingPathComponent(asset.name)
             try Data("invalid".utf8).write(to: file)
@@ -396,7 +409,7 @@ private final class Rig {
         dependencies.requestMicrophone = { permissions.requests += 1; return false }
         dependencies.inputs = { permissions.input.map { [$0] } ?? [] }
         dependencies.input = { _ in permissions.input }
-        if !verifyModel { dependencies.prepareRecognition = { _, _, _ in true } }
+        if !verifyModel { dependencies.prepareRecognition = { _, _, _ in PreparedSpeech(metal: true) } }
         model = AppModel(dataFolder: root, defaults: nil, dependencies: dependencies)
         model.settings.options.sources = sources
         model.settings.options.enableVAD = false

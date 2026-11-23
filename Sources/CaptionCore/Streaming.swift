@@ -102,6 +102,7 @@ public actor StreamingTranscription {
     private let engine: any SpeechRecognitionEngine
     private let notify: @Sendable (StreamEvent) async -> Void
     private var vad: SileroDetector?
+    private var vadCandidates: [URL]
     private var announcedFallback = false
 
     private let frameSize = 1_600
@@ -130,7 +131,7 @@ public actor StreamingTranscription {
     private var aggregation: PhraseAggregation
 
     public init(source: AudioSource, sessionID: UUID, options: SessionOptions,
-                engine: any SpeechRecognitionEngine, vadURL: URL?,
+                engine: any SpeechRecognitionEngine, vadURL: URL?, fallbackVADURL: URL? = nil,
                 notify: @escaping @Sendable (StreamEvent) async -> Void) {
         self.source = source
         self.sessionID = sessionID
@@ -139,31 +140,42 @@ public actor StreamingTranscription {
         self.notify = notify
         aggregation = PhraseAggregation(pause: options.effectivePhrasePause,
                                         strategy: options.translationStrategy ?? .balanced)
-        let logger = Logger(subsystem: "local.caption", category: "recognition")
-        if options.enableVAD && vadURL != nil {
-            logger.debug("Initializing Silero VAD; source=\(source.rawValue, privacy: .public)")
-        }
-        let detector = options.enableVAD ? vadURL.flatMap { SileroDetector(url: $0) } : nil
-        self.vad = detector
-        if detector != nil {
-            logger.debug("Silero VAD ready; source=\(source.rawValue, privacy: .public)")
-        } else if options.enableVAD {
-            logger.warning("Silero VAD unavailable; using the audio-level fallback")
-        }
+        vadCandidates = [vadURL, fallbackVADURL].compactMap { $0 }
     }
 
     public func consume(_ stream: AsyncStream<AudioChunk>) async {
-        if options.enableVAD && vad == nil { await reportFallback() }
+        if options.enableVAD { await activateVAD() }
         for await chunk in stream {
             guard !Task.isCancelled else { break }
             await receive(chunk)
         }
         if incoming.count > 0, let start = frameStart, let frame = incoming.take(incoming.count) {
-            await process(frame, at: start)
+            await process(frame, at: start, flush: true)
         }
         await finalize(keepOverlap: false)
         finishTranslationPhrase()
         while let worker { await worker.value }
+        vad = nil
+    }
+
+    private static let vadLog = Logger(subsystem: "local.caption", category: "recognition")
+
+    private func activateVAD(afterFailure: Bool = false) async {
+        var failed = afterFailure
+        while !vadCandidates.isEmpty, !Task.isCancelled {
+            let candidate = vadCandidates.removeFirst()
+            do {
+                let detector = try SileroDetector(url: candidate)
+                vad = detector
+                Self.vadLog.info("Silero VAD \(detector.version, privacy: .public) ready; source=\(self.source.rawValue, privacy: .public)")
+                if failed { await notify(.issue(source, "The preferred Silero model could not load. Check it in Settings → Models.")) }
+                return
+            } catch {
+                failed = true
+                Self.vadLog.error("Silero model initialization failed; source=\(self.source.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .private)")
+            }
+        }
+        if !Task.isCancelled { await reportFallback() }
     }
 
     private func reportFallback() async {
@@ -181,12 +193,13 @@ public actor StreamingTranscription {
                 await notify(.issue(source, "Audio was interrupted or the processing buffer filled. Resuming at the next available audio."))
             }
             if incoming.count > 0, let start = frameStart, let remaining = incoming.take(incoming.count) {
-                await process(remaining, at: start)
+                await process(remaining, at: start, flush: true)
             }
             await finalize(keepOverlap: false)
             if chunk.start - inputEnd >= options.effectivePhrasePause { finishTranslationPhrase() }
             preRoll.removeAll()
             carry.removeAll()
+            vad?.reset()
             incoming.reset()
             frameStart = nil
         } else if let inputEnd, chunk.start < inputEnd - 0.015 {
@@ -203,21 +216,22 @@ public actor StreamingTranscription {
         }
     }
 
-    private func process(_ samples: [Float], at start: Double) async {
+    private func process(_ samples: [Float], at start: Double, flush: Bool = false) async {
         let rms = sqrt(samples.reduce(Float.zero) { $0 + $1 * $1 } / Float(samples.count))
         activityTicks += 1
         if activityTicks % 2 == 0 { await notify(.activity(source, min(1, Double(rms) * 6))) }
         var speech = rms > 0.003
         if options.enableVAD {
-            if rms < 0.00025 {
-                speech = false
-            } else if let vad {
-                let context = Array(preRoll.suffix(4_800)) + samples
-                if let probability = vad.probability(context) {
+            while let detector = vad {
+                do {
+                    let probability = try detector.probability(samples, history: preRoll.suffix(4_800),
+                                                               quiet: rms < 0.00025, flush: flush)
                     speech = probability >= (phrase.isEmpty ? 0.38 : 0.30)
-                } else {
-                    self.vad = nil
-                    await reportFallback()
+                    break
+                } catch {
+                    Self.vadLog.error("Silero inference failed; source=\(self.source.rawValue, privacy: .public) version=\(detector.version, privacy: .public) error=\(error.localizedDescription, privacy: .private)")
+                    vad = nil
+                    await activateVAD(afterFailure: true)
                 }
             }
         }

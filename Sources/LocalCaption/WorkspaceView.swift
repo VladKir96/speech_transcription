@@ -257,9 +257,9 @@ private struct LiveWorkspace: View {
     @ViewBuilder
     private var footer: some View {
         HStack(spacing: 10) {
-            if !model.installed.contains(model.settings.options.model.id), !model.sessionActive {
+            if !model.installed.contains(model.settings.options.model.q8ID), !model.sessionActive {
                 Image(systemName: "arrow.down.circle").foregroundStyle(Palette.system)
-                Text("Install \(model.settings.options.model.title) to begin.")
+                Text("Install \(model.settings.options.model.title).")
                 Button("Open Settings") {
                     model.preferencesTab = .models
                     openSettings()

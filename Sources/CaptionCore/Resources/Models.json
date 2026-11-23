@@ -1,43 +1,44 @@
 [
   {
-    "id": "small",
-    "name": "Whisper Small",
-    "detail": "Multilingual Q5_1 weights for responsive captions.",
+    "id": "small-q8",
+    "name": "Whisper Small (Q8)",
+    "detail": "Faster multilingual speech recognition with Q8_0 weights.",
     "kind": "speech",
     "assets": [
       {
-        "name": "ggml-small-q5_1.bin",
-        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q5_1.bin",
-        "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
-        "bytes": 190085487
+        "name": "ggml-small-q8_0.bin",
+        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q8_0.bin",
+        "sha256": "49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f",
+        "bytes": 264464607
       }
     ]
   },
   {
-    "id": "turbo",
-    "name": "Whisper Large-v3 Turbo",
-    "detail": "Multilingual Q5_0 weights with a reduced decoder.",
+    "id": "turbo-q8",
+    "name": "Whisper Large-v3 Turbo (Q8)",
+    "detail": "Higher-capacity multilingual speech recognition with Q8_0 weights.",
     "kind": "speech",
     "assets": [
       {
-        "name": "ggml-large-v3-turbo-q5_0.bin",
-        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin",
-        "sha256": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
-        "bytes": 574041195
+        "name": "ggml-large-v3-turbo-q8_0.bin",
+        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q8_0.bin",
+        "sha256": "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1",
+        "bytes": 874188075
       }
     ]
   },
   {
-    "id": "silero",
-    "name": "Silero VAD 6.2",
-    "detail": "Neural voice activity detection for speech boundaries.",
+    "id": "silero-6.3",
+    "name": "Silero VAD 6.3",
+    "detail": "Preferred streaming model for speech boundaries.",
     "kind": "vad",
+    "version": "6.3",
     "assets": [
       {
-        "name": "ggml-silero-v6.2.0.bin",
-        "url": "https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin",
-        "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
-        "bytes": 885098
+        "name": "silero_vad.onnx",
+        "url": "https://raw.githubusercontent.com/snakers4/silero-vad/63d4a2a7bfce8cd9bb39ed8fa0afcb5236d73e01/src/silero_vad/data/silero_vad.onnx",
+        "sha256": "f6f4407b41e05e277e7f5cfd9b9ae957b1dfe763c6076a934734c0b448e09b31",
+        "bytes": 2204103
       }
     ]
   },

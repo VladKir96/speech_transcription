@@ -329,10 +329,11 @@ private struct CaptureFeed {
                 store = try CaptionRepository(location: nil)
             }
             CaptureDiagnostics.session.info("Verifying speech model; model=\(options.model.id, privacy: .public)")
-            let metal = try await dependencies.prepareRecognition(modelStore, options, recognizer)
+            let speech = try await dependencies.prepareRecognition(modelStore, options, recognizer)
             try Task.checkCancellation()
-            hardware = metal ? "Metal" : "CPU"
-            if options.useMetal && !metal { warnings.append("Metal is unavailable. Whisper is running on the CPU.") }
+            hardware = speech.metal ? "Metal" : "CPU"
+            if options.useMetal && !speech.metal { warnings.append("Metal is unavailable. Whisper is running on the CPU.") }
+            if let compatibilityNotice = speech.compatibilityNotice { warnings.append(compatibilityNotice) }
 
             let defaultName = "Session · \(Date.now.formatted(date: .abbreviated, time: .shortened))"
             let custom = preferences.sessionTitle.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -534,12 +535,18 @@ private struct CaptureFeed {
         }
     }
 
+    private func voiceActivityModels(_ options: SessionOptions) async -> [URL] {
+        guard options.enableVAD, let modelStore else { return [] }
+        let legacy = ProcessInfo.processInfo.environment["LOCALCAPTION_VAD_VERSION"] == "6.2"
+        return await modelStore.voiceActivityModels(preferLegacy: legacy)
+    }
+
     private func connectSources(_ current: CaptionSession, clock: CaptureClock) async {
-        let vadURL = current.options.enableVAD ? await modelStore?.path("silero") : nil
-        CaptureDiagnostics.session.info("Preparing capture; Silero installed=\(vadURL != nil)")
+        let vadModels = await voiceActivityModels(current.options)
+        CaptureDiagnostics.session.info("Preparing capture; verified Silero models=\(vadModels.count)")
         guard !Task.isCancelled else { return }
-        async let systemStarted: Void = connectSystem(current, clock: clock, vadURL: vadURL)
-        async let microphoneStarted: Void = connectMicrophone(current, clock: clock, vadURL: vadURL, request: true)
+        async let systemStarted: Void = connectSystem(current, clock: clock, vadModels: vadModels)
+        async let microphoneStarted: Void = connectMicrophone(current, clock: clock, vadModels: vadModels, request: true)
         _ = await (systemStarted, microphoneStarted)
         refreshDevicesAndPermissions()
     }
@@ -548,13 +555,13 @@ private struct CaptureFeed {
         activeCount > 0 || (!microphoneRequested && current.options.sources.contains(.microphone))
     }
 
-    private func connectSystem(_ current: CaptionSession, clock: CaptureClock, vadURL: URL?) async {
+    private func connectSystem(_ current: CaptionSession, clock: CaptureClock, vadModels: [URL]) async {
         let source = AudioSource.system
         guard current.options.sources.contains(source), feeds[source] == nil, !Task.isCancelled else { return }
         CaptureDiagnostics.session.info("Preparing System Audio pipeline")
         systemAudioAccess = .unchecked
         lanes[source]?.status = .starting
-        let feed = makeFeed(source, session: current, vadURL: vadURL)
+        let feed = makeFeed(source, session: current, vadModels: vadModels)
         do {
             try await dependencies.system.start(selection: current.options.systemAudioSelection ?? .automatic,
                 clock: clock, chunks: feed.continuation,
@@ -581,7 +588,7 @@ private struct CaptureFeed {
     }
 
     private func connectMicrophone(_ current: CaptionSession, clock: CaptureClock,
-                                   vadURL: URL?, request: Bool) async {
+                                   vadModels: [URL], request: Bool) async {
         let source = AudioSource.microphone
         guard microphoneRequested, feeds[source] == nil, !Task.isCancelled else { return }
         let revision = microphoneRevision
@@ -603,7 +610,7 @@ private struct CaptureFeed {
             return
         }
 
-        let feed = makeFeed(source, session: current, vadURL: vadURL)
+        let feed = makeFeed(source, session: current, vadModels: vadModels)
         do {
             try dependencies.microphone.start(device: selected, clock: clock, chunks: feed.continuation) { [weak self] message in
                 Task { @MainActor in self?.captureIssue(message, source: source, id: feed.id) }
@@ -619,12 +626,12 @@ private struct CaptureFeed {
         }
     }
 
-    private func makeFeed(_ source: AudioSource, session: CaptionSession, vadURL: URL?) -> CaptureFeed {
+    private func makeFeed(_ source: AudioSource, session: CaptionSession, vadModels: [URL]) -> CaptureFeed {
         lanes[source]?.issue = nil
         CaptureDiagnostics.session.debug("Preparing transcription pipeline; source=\(source.rawValue, privacy: .public)")
         let pair = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(96))
         let pipeline = StreamingTranscription(source: source, sessionID: session.id, options: session.options,
-            engine: recognizer, vadURL: vadURL) { [weak self] event in
+            engine: recognizer, vadURL: vadModels.first, fallbackVADURL: vadModels.dropFirst().first) { [weak self] event in
                 await self?.receive(event, sessionID: session.id)
             }
         let feed = CaptureFeed(id: UUID(), continuation: pair.continuation,
@@ -898,9 +905,9 @@ private struct CaptureFeed {
         guard dependencies.microphone.device == nil,
               prompt || (selected != nil && clock.elapsed >= micRetryAt && dependencies.microphoneAuthorization() == .authorized) else { return }
         micRetryAt = clock.elapsed + 5
-        let vad = current.options.enableVAD ? await modelStore?.path("silero") : nil
+        let vadModels = await voiceActivityModels(current.options)
         if !Task.isCancelled, revision == microphoneRevision, recording {
-            await connectMicrophone(current, clock: clock, vadURL: vad, request: prompt)
+            await connectMicrophone(current, clock: clock, vadModels: vadModels, request: prompt)
             refreshDevicesAndPermissions()
         }
     }

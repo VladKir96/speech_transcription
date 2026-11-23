@@ -115,21 +115,90 @@ public actor WhisperRecognition: SpeechRecognitionEngine {
 
 // Owned by an individual streaming pipeline actor.
 final class SileroDetector: @unchecked Sendable {
-    let pointer: OpaquePointer
+    private let pointer: OpaquePointer
+    let version: String
+    private let onnx: Bool
+    private static let windowSize = 512
+    private var residual = [Float](repeating: 0, count: SileroDetector.windowSize)
+    private var residualCount = 0
 
-    init?(url: URL) {
-        guard let pointer = lc_vad_open(url.path) else { return nil }
+    init(url: URL) throws {
+        onnx = url.pathExtension.lowercased() == "onnx"
+        version = onnx ? "6.3 ONNX" : "6.2 GGML"
+        var error: UnsafeMutablePointer<CChar>?
+        let opened = onnx ? lc_silero_onnx_open(url.path, Int32(AudioChunk.rate), &error) : lc_vad_open(url.path)
+        guard let pointer = opened else {
+            throw nativeError(error, default: "The Silero model could not be loaded.")
+        }
         self.pointer = pointer
     }
 
-    func probability(_ samples: [Float]) -> Float? {
-        let p = samples.withUnsafeBufferPointer {
-            lc_vad_probability(pointer, $0.baseAddress, Int32($0.count))
+    func probability(_ samples: [Float], history: ArraySlice<Float>,
+                     quiet: Bool, flush: Bool = false) throws -> Float {
+        if onnx {
+            // The ONNX state advances on every frame, even when the app's energy gate treats it as silent.
+            let result = try samples.withUnsafeBufferPointer { try stream($0, flush: flush) }
+            return quiet ? 0 : result
         }
-        return p.isFinite && p >= 0 ? p : nil
+        if quiet { return 0 }
+        let context = Array(history) + samples
+        let p = context.withUnsafeBufferPointer { lc_vad_probability(pointer, $0.baseAddress, Int32($0.count)) }
+        guard p.isFinite, p >= 0 else { throw CaptionFailure("The Silero GGML model could not process this frame.") }
+        return p
     }
 
-    deinit { lc_vad_close(pointer) }
+    private func stream(_ samples: UnsafeBufferPointer<Float>, flush: Bool) throws -> Float {
+        guard let base = samples.baseAddress else { return 0 }
+        let size = Self.windowSize
+        var highest: Float = 0
+        var offset = 0
+        if residualCount > 0 {
+            offset = min(size - residualCount, samples.count)
+            residual.withUnsafeMutableBufferPointer {
+                $0.baseAddress!.advanced(by: residualCount).update(from: base, count: offset)
+            }
+            residualCount += offset
+            if residualCount == size {
+                highest = try residual.withUnsafeBufferPointer { try score($0.baseAddress!) }
+                residualCount = 0
+            }
+        }
+        while offset + size <= samples.count {
+            highest = max(highest, try score(base.advanced(by: offset)))
+            offset += size
+        }
+        if offset < samples.count {
+            residualCount = samples.count - offset
+            residual.withUnsafeMutableBufferPointer {
+                $0.baseAddress!.update(from: base.advanced(by: offset), count: residualCount)
+            }
+        }
+        if flush, residualCount > 0 {
+            for index in residualCount..<size { residual[index] = 0 }
+            highest = max(highest, try residual.withUnsafeBufferPointer { try score($0.baseAddress!) })
+            residualCount = 0
+        }
+        return highest
+    }
+
+    private func score(_ frame: UnsafePointer<Float>) throws -> Float {
+        var error: UnsafeMutablePointer<CChar>?
+        let probability = lc_silero_onnx_probability(pointer, frame, Int32(Self.windowSize), &error)
+        guard error == nil, probability >= 0 else {
+            throw nativeError(error, default: "The Silero ONNX model could not process this frame.")
+        }
+        return probability
+    }
+
+    func reset() {
+        residualCount = 0
+        if onnx { lc_silero_onnx_reset(pointer) }
+    }
+
+    deinit {
+        if onnx { lc_silero_onnx_close(pointer) }
+        else { lc_vad_close(pointer) }
+    }
 }
 
 public protocol TranslationEngine: Sendable {

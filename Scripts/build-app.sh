@@ -2,7 +2,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [[ ! -f .deps/native/libcaption_inference.dylib || ! -f .deps/native/libctranslate2.4.6.3.dylib ||
-      Native/NLLB.cpp -nt .deps/native/libcaption_inference.dylib ]]; then
+      Native/NLLB.cpp -nt .deps/native/libcaption_inference.dylib ||
+      Native/Inference.mm -nt .deps/native/libcaption_inference.dylib ||
+      Sources/CInference/inference.h -nt .deps/native/libcaption_inference.dylib ]]; then
     Scripts/bootstrap.sh
 fi
 source Scripts/swift-env.sh
@@ -18,7 +20,7 @@ mkdir -p "$app/Contents/"{MacOS,Frameworks,Resources/ThirdParty}
 cp "$build_dir/LocalCaption" "$app/Contents/MacOS/LocalCaption"
 cp .deps/native/*.dylib "$app/Contents/Frameworks/"
 cp AppResources/Info.plist "$app/Contents/"
-cp Sources/CaptionCore/Resources/Models.json "$app/Contents/Resources/"
+cp Sources/CaptionCore/Resources/{Models,RollbackModels}.json "$app/Contents/Resources/"
 cp .deps/whisper/LICENSE "$app/Contents/Resources/ThirdParty/whisper.cpp-LICENSE.txt"
 cp .deps/sentencepiece/LICENSE "$app/Contents/Resources/ThirdParty/sentencepiece-LICENSE.txt"
 cp .deps/onnxruntime/notices/LICENSE "$app/Contents/Resources/ThirdParty/ONNXRuntime-LICENSE.txt"
