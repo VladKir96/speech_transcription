@@ -1,0 +1,195 @@
+[
+  {
+    "id": "small",
+    "name": "Whisper Small",
+    "detail": "Multilingual Q5_1 weights for responsive captions.",
+    "kind": "speech",
+    "assets": [
+      {
+        "name": "ggml-small-q5_1.bin",
+        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q5_1.bin",
+        "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+        "bytes": 190085487
+      }
+    ]
+  },
+  {
+    "id": "turbo",
+    "name": "Whisper Large-v3 Turbo",
+    "detail": "Multilingual Q5_0 weights with a reduced decoder.",
+    "kind": "speech",
+    "assets": [
+      {
+        "name": "ggml-large-v3-turbo-q5_0.bin",
+        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin",
+        "sha256": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+        "bytes": 574041195
+      }
+    ]
+  },
+  {
+    "id": "silero",
+    "name": "Silero VAD 6.2",
+    "detail": "Neural voice activity detection for speech boundaries.",
+    "kind": "vad",
+    "assets": [
+      {
+        "name": "ggml-silero-v6.2.0.bin",
+        "url": "https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin",
+        "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+        "bytes": 885098
+      }
+    ]
+  },
+  {
+    "id": "opus-en-ru",
+    "name": "Marian English → Russian",
+    "detail": "Quantized OPUS-MT weights with SentencePiece tokenizers.",
+    "kind": "translation",
+    "assets": [
+      {
+        "name": "encoder_model_quantized.onnx",
+        "url": "https://huggingface.co/Xenova/opus-mt-en-ru/resolve/e050376e960175e8ddc5cff85025dc8436cddd68/onnx/encoder_model_quantized.onnx",
+        "sha256": "97f28d8295d231b7da721ded06fa8c034787df2122cd8f85b904abdc4d15bd53",
+        "bytes": 51628446
+      },
+      {
+        "name": "decoder_model_quantized.onnx",
+        "url": "https://huggingface.co/Xenova/opus-mt-en-ru/resolve/e050376e960175e8ddc5cff85025dc8436cddd68/onnx/decoder_model_quantized.onnx",
+        "sha256": "7e4e602c31130176b086cd4bf31d6d08d44a6a367617e910870e0ea3e5408574",
+        "bytes": 58560874
+      },
+      {
+        "name": "decoder_with_past_model_quantized.onnx",
+        "url": "https://huggingface.co/Xenova/opus-mt-en-ru/resolve/e050376e960175e8ddc5cff85025dc8436cddd68/onnx/decoder_with_past_model_quantized.onnx",
+        "sha256": "7946cca821e951629360b4bd12e7965318f777c06c4f0d5443c82197b3b8f169",
+        "bytes": 55289410
+      },
+      {
+        "name": "config.json",
+        "url": "https://huggingface.co/Helsinki-NLP/opus-mt-en-ru/resolve/bb09c99d180016eac6819df3dae68edb1690fdee/config.json",
+        "sha256": "d3c2614fd099bc228fc257f047e46f1c6f94cfa12dee2b1fa6c0d780e6b7de06",
+        "bytes": 1381
+      },
+      {
+        "name": "source.spm",
+        "url": "https://huggingface.co/Helsinki-NLP/opus-mt-en-ru/resolve/bb09c99d180016eac6819df3dae68edb1690fdee/source.spm",
+        "sha256": "16bebef1389a0b8ab452772c4e35b9e605e5713f8ac7baa71ca701394eaa086d",
+        "bytes": 802781
+      },
+      {
+        "name": "target.spm",
+        "url": "https://huggingface.co/Helsinki-NLP/opus-mt-en-ru/resolve/bb09c99d180016eac6819df3dae68edb1690fdee/target.spm",
+        "sha256": "745998e51ba5b058e38b7ac7765c25c43ed5c1c39cc92b27163b9b2e323c9d7c",
+        "bytes": 1080169
+      },
+      {
+        "name": "vocab.json",
+        "url": "https://huggingface.co/Helsinki-NLP/opus-mt-en-ru/resolve/bb09c99d180016eac6819df3dae68edb1690fdee/vocab.json",
+        "sha256": "33e95da3be3fa3b50169c4c46693ba2f29fbf4cb29d99044bd07d72d181fa1e9",
+        "bytes": 2601758
+      }
+    ]
+  },
+  {
+    "id": "opus-ru-en",
+    "name": "Marian Russian → English",
+    "detail": "Quantized OPUS-MT weights with SentencePiece tokenizers.",
+    "kind": "translation",
+    "assets": [
+      {
+        "name": "encoder_model_quantized.onnx",
+        "url": "https://huggingface.co/Xenova/opus-mt-ru-en/resolve/afe8c6c738ec81b6d033fd8f44f9678a639a7c67/onnx/encoder_model_quantized.onnx",
+        "sha256": "c10df0466540534bb70c4402d539c349b8bfa9968184cad89f51408cf13e7eb7",
+        "bytes": 51628446
+      },
+      {
+        "name": "decoder_model_quantized.onnx",
+        "url": "https://huggingface.co/Xenova/opus-mt-ru-en/resolve/afe8c6c738ec81b6d033fd8f44f9678a639a7c67/onnx/decoder_model_quantized.onnx",
+        "sha256": "d880abf58612013815554ef55c98d0f28b68190b2cb6f65c39d6e834f51dda8c",
+        "bytes": 58560874
+      },
+      {
+        "name": "decoder_with_past_model_quantized.onnx",
+        "url": "https://huggingface.co/Xenova/opus-mt-ru-en/resolve/afe8c6c738ec81b6d033fd8f44f9678a639a7c67/onnx/decoder_with_past_model_quantized.onnx",
+        "sha256": "1596873df562c7b5d0b0a4da9021df3b8f06b23400d207a6d5071c6a624d3b2e",
+        "bytes": 55289410
+      },
+      {
+        "name": "config.json",
+        "url": "https://huggingface.co/Helsinki-NLP/opus-mt-ru-en/resolve/fbd6dc73284f95536648512cc21d57f19191961a/config.json",
+        "sha256": "5ea76c78596bce8fe005ef89e00de0924bf83e5f532ce08784ff1fcefb699f5f",
+        "bytes": 1381
+      },
+      {
+        "name": "source.spm",
+        "url": "https://huggingface.co/Helsinki-NLP/opus-mt-ru-en/resolve/fbd6dc73284f95536648512cc21d57f19191961a/source.spm",
+        "sha256": "745998e51ba5b058e38b7ac7765c25c43ed5c1c39cc92b27163b9b2e323c9d7c",
+        "bytes": 1080169
+      },
+      {
+        "name": "target.spm",
+        "url": "https://huggingface.co/Helsinki-NLP/opus-mt-ru-en/resolve/fbd6dc73284f95536648512cc21d57f19191961a/target.spm",
+        "sha256": "16bebef1389a0b8ab452772c4e35b9e605e5713f8ac7baa71ca701394eaa086d",
+        "bytes": 802781
+      },
+      {
+        "name": "vocab.json",
+        "url": "https://huggingface.co/Helsinki-NLP/opus-mt-ru-en/resolve/fbd6dc73284f95536648512cc21d57f19191961a/vocab.json",
+        "sha256": "33e95da3be3fa3b50169c4c46693ba2f29fbf4cb29d99044bd07d72d181fa1e9",
+        "bytes": 2601758
+      }
+    ]
+  },
+  {
+    "id": "nllb-200-600m",
+    "name": "NLLB-200 Distilled 600M",
+    "detail": "English ↔ Russian · CTranslate2 int8 · CPU",
+    "kind": "translation",
+    "version": "b3bbac6-ct2-4.6.3-int8",
+    "license": "CC BY-NC 4.0 · Noncommercial use only",
+    "licenseURL": "https://creativecommons.org/licenses/by-nc/4.0/",
+    "assets": [
+      {
+        "name": "config.json",
+        "sha256": "8f6496adfc930cbfecbe8281112197705c488fab47d34b4829b06d7f478909af",
+        "bytes": 223
+      },
+      {
+        "name": "localcaption.json",
+        "sha256": "976b38dbfe80a79494b639ae9abd204f865f421cf617ad6ca0c5789a944488b6",
+        "bytes": 267
+      },
+      {
+        "name": "model.bin",
+        "sha256": "ca46810c99e6bf5f2f4a4caa13321c03ada2d029a157d8fa0ca84afba27ffd2f",
+        "bytes": 622596105
+      },
+      {
+        "name": "sentencepiece.bpe.model",
+        "sha256": "14bb8dfb35c0ffdea7bc01e56cea38b9e3d5efcdcb9c251d6b40538e1aab555a",
+        "bytes": 4852054
+      },
+      {
+        "name": "shared_vocabulary.json",
+        "sha256": "af53bfd0e6f726209e7325e45b87ab3b14e5856f7d42d7b9be91de3287c45267",
+        "bytes": 5921176
+      },
+      {
+        "name": "special_tokens_map.json",
+        "sha256": "992bd4ed610d644d6823081937bcc91bb8878dd556cea4ae5327f2480361330e",
+        "bytes": 3548
+      },
+      {
+        "name": "tokenizer.json",
+        "sha256": "e316b82de11d0f951f370943b3c438311629547285129b0b81dadabd01bca665",
+        "bytes": 17331176
+      },
+      {
+        "name": "tokenizer_config.json",
+        "sha256": "d1aa8c3697d3e35674f97b5b7e9c99d22b010f528e80140257d97316be90d044",
+        "bytes": 564
+      }
+    ]
+  }
+]

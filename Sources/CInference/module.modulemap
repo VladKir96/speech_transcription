@@ -1,0 +1,5 @@
+module CInference [system] {
+  header "inference.h"
+  link "caption_inference"
+  export *
+}

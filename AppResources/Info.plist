@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleDisplayName</key><string>LocalCaption</string>
+    <key>CFBundleExecutable</key><string>LocalCaption</string>
+    <key>CFBundleIdentifier</key><string>local.caption.macos</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key><string>LocalCaption</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>1.2.0</string>
+    <key>CFBundleVersion</key><string>5</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>LocalCaption transcribes speech from the selected microphone during an active session. Audio is processed on this Mac.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>LocalCaption uses ScreenCaptureKit to listen to audio from other apps during an active session. The app receives only audio.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>LocalCaption transcribes audio playing in other apps during an active session. Audio is processed on this Mac.</string>
+</dict>
+</plist>
