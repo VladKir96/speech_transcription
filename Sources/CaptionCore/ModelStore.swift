@@ -3,7 +3,7 @@ import Foundation
 import OSLog
 
 public struct ModelDescriptor: Codable, Identifiable, Sendable {
-    public enum Kind: String, Codable, Sendable { case speech, vad, translation }
+    public enum Kind: String, Codable, Sendable { case speech, vad, translation, diarization }
 
     public struct Asset: Codable, Sendable {
         public let name: String
@@ -55,9 +55,21 @@ public actor ModelStore {
 
     public func installedIDs() -> Set<String> {
         Set(catalog.filter { model in
-            if model.kind == .vad || model.kind == .speech { return (try? verifiedFile(model)) != nil }
+            if model.kind != .translation { return (try? verifiedFile(model)) != nil }
             return model.requiresImport ? (try? verifiedTranslationModel(model.id)) != nil : installed(model)
         }.map(\.id))
+    }
+
+    public func diarizationModels() throws -> (segmentation: URL, embedding: URL)? {
+        guard let segmentation = descriptor("speaker-segmentation"), let embedding = descriptor("speaker-embedding"),
+              let segmentationFile = segmentation.assets.first, let embeddingFile = embedding.assets.first else {
+            throw CaptionFailure("The speaker models are missing from the model catalog.")
+        }
+        for (model, file) in [(segmentation, segmentationFile), (embedding, embeddingFile)] {
+            let path = directory.appendingPathComponent(model.id).appendingPathComponent(file.name)
+            guard FileManager.default.fileExists(atPath: path.path) else { return nil }
+        }
+        return (try verifiedFile(segmentation), try verifiedFile(embedding))
     }
 
     public func path(_ id: String) -> URL? {

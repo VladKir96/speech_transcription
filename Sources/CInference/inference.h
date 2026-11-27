@@ -8,6 +8,7 @@ extern "C" {
 typedef struct lc_whisper lc_whisper;
 typedef struct lc_vad lc_vad;
 typedef struct lc_silero_onnx lc_silero_onnx;
+typedef struct lc_speaker_engine lc_speaker_engine;
 typedef struct lc_translator lc_translator;
 typedef struct lc_nllb lc_nllb;
 typedef struct lc_cancel_flag lc_cancel_flag;
@@ -32,6 +33,14 @@ lc_silero_onnx *lc_silero_onnx_open(const char *path, int sample_rate, char **er
 float lc_silero_onnx_probability(lc_silero_onnx *engine, const float *samples, int count, char **error);
 void lc_silero_onnx_reset(lc_silero_onnx *engine);
 void lc_silero_onnx_close(lc_silero_onnx *engine);
+
+lc_speaker_engine *lc_speaker_open(const char *segmentation, const char *embedding, char **error);
+void lc_speaker_close(lc_speaker_engine *engine);
+// Pyannote frame centers are 495 samples from each receptive field's start, at a 270 sample stride.
+int lc_speaker_segment(lc_speaker_engine *engine, const float *pcm, int count,
+                       unsigned char *activity, float *confidence, int capacity, char **error);
+bool lc_speaker_embed(lc_speaker_engine *engine, const float *pcm, int count,
+                      float *embedding, int capacity, char **error);
 
 lc_translator *lc_translator_open(const char *folder, char **error);
 char *lc_translate(lc_translator *engine, const char *text, char **error);

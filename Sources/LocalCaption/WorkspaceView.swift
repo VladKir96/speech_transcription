@@ -142,8 +142,9 @@ private struct LiveWorkspace: View {
         .padding(.top, 18)
         .padding(.bottom, 12)
         .sheet(isPresented: $showExport) {
-            ExportOptions(defaultFormat: model.settings.exportFormat, defaultDisplay: model.settings.exportDisplay) { format, display in
-                await model.exportCurrent(format: format, display: display)
+            ExportOptions(defaultFormat: model.settings.exportFormat, defaultDisplay: model.settings.exportDisplay,
+                          defaultSpeakerNames: model.settings.exportSpeakerNames ?? true) { format, display, names in
+                await model.exportCurrent(format: format, display: display, includeSpeakerNames: names)
             }
         }
     }

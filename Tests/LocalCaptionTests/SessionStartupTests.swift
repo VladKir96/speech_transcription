@@ -86,6 +86,36 @@ import Testing
 
 @Suite @MainActor
 struct SessionStartupTests {
+    @Test(arguments: [false, true])
+    func enablingMissingOrCorruptSpeakerModelsKeepsCaptureRunning(_ corrupt: Bool) async throws {
+        let rig = try await Rig()
+        #expect(!rig.model.diarizationOptions.enabledByDefault)
+        if corrupt {
+            let store = try #require(rig.model.modelStore)
+            for model in store.catalog where model.kind == .diarization {
+                let folder = store.directory.appendingPathComponent(model.id)
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let name = try #require(model.assets.first?.name)
+                try Data("invalid".utf8).write(to: folder.appendingPathComponent(name))
+            }
+        }
+        await rig.model.start()
+        #expect(rig.model.diarizationStatus == .disabled)
+        rig.model.toggleDiarization()
+        let expected = corrupt ? DiarizationStatus.error : .unavailable
+        for _ in 0..<100 {
+            if rig.model.diarizationStatus == expected { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(rig.model.diarizationStatus == expected)
+        #expect(rig.model.recording)
+        #expect(rig.system.running && rig.microphone.device != nil)
+        rig.model.toggleDiarization()
+        #expect(rig.model.diarizationStatus == .disabled)
+        #expect(rig.system.starts == 1)
+        await rig.model.stop()
+    }
+
     @Test(arguments: [Set([AudioSource.microphone]), [.system], Set(AudioSource.allCases)])
     func startStopPauseResumeAndTenRestarts(_ sources: Set<AudioSource>) async throws {
         let rig = try await Rig(sources: sources)

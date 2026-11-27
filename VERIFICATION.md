@@ -1,5 +1,82 @@
 # Verification
 
+## LocalCaption 1.4.0 Speaker Diarization
+
+### Runtime and models
+
+The app uses the existing arm64 ONNX Runtime 1.24.4 CPU backend. The sherpa-onnx API reviewed for this feature exposes offline diarization. LocalCaption runs a bounded rolling window and maintains its own session-scoped speaker registry. Both artifacts were downloaded, matched the publisher’s pinned byte count and SHA-256, and ran natively on the Apple Silicon test Mac. [Sherpa diarization documentation](https://k2-fsa.github.io/sherpa/onnx/speaker-diarization/index.html)
+
+| Model | Source | Bytes | SHA-256 | License |
+| --- | --- | ---: | --- | --- |
+| Pyannote Speaker Segmentation 3.0, FP32 | [Pinned ONNX Community conversion](https://huggingface.co/onnx-community/pyannote-segmentation-3.0/tree/733a93b6473d019a773298e08cefa686894b1854) | 5,986,908 | `057ee564753071c0b09b5b611648b50ac188d50846bff5f01e9f7bbf1591ea25` | MIT |
+| WeSpeaker ResNet34-LM | [Pinned publisher artifact](https://huggingface.co/Wespeaker/wespeaker-resnet34-LM/tree/f0c48c298fd835726c27956a5d617bad7115627e) | 26,530,309 | `7bb2f06e9df17cdf1ef14ee8a15ab08ed28e8d0ef5054ee135741560df2ec068` | CC BY 4.0 |
+
+The native compatibility probe passed a 16 kHz mono tensor to Pyannote and got 234 by 7 scores for four seconds and 589 by 7 for ten seconds. The seven classes represent silence, three local voice slots, and three pairs of simultaneous speakers. The bridge passes WeSpeaker 80-bin log-Mel features with the publisher's windowing and mean normalization. Both 70- and 160-frame inputs returned 256-value embeddings. LocalCaption normalizes the vectors before cosine clustering. [Pyannote class specification](https://huggingface.co/pyannote/segmentation-3.0) · [WeSpeaker reference preprocessing](https://github.com/wenet-e2e/wespeaker/blob/master/wespeaker/bin/infer_onnx.py)
+
+### Processing and data lifetime
+
+Only System Audio has a diarization input. The speaker worker receives normalized PCM through a 24-chunk FIFO buffer that drops the oldest pending chunk when full. It handles gaps on the capture clock, retains at most four or ten seconds of audio, and runs each model at single-threaded CPU settings. The modes analyze about once every one or two seconds, respectively. Exclusive speech supplies the embeddings. An observed overlap can mark a caption without updating a speaker profile.
+
+The tracker uses cosine similarity, a 0.55 default verified against the local fixture, a margin for ambiguous matches, and an evidence requirement for new profiles. It can hold up to ten confirmed profiles and eight candidates. The fixed-count setting caps profiles. The display name can change independently of the speaker ID. The app keeps profiles and recent timeline metadata in memory during a session, including across a pause or temporary deactivation.
+
+Disabling immediately closes the input and cancels the worker. Any synchronous native call finishes safely before the worker releases both model sessions. Re-enabling waits for that shutdown before loading a replacement pair. The disabled path allocates no audio buffer, starts no worker, and performs no speaker inference. Activation starts at the analysis input's first eligible audio chunk. A caption crossing that boundary keeps its text without a speaker label.
+
+Caption alignment uses Whisper segment times and the rolling speaker timeline. Confirmed speaker changes separate pending translation phrases. A dedicated phrase queue displays original text while waiting up to about 1.35 seconds in Real-Time and 2.6 seconds in High Accuracy when an attribution is pending. Known mixed or overlapping captions keep the original Whisper segment intact. Recent Unknown Speaker assignments can be patched by caption ID. A completed translation stays in place when its speaker label changes.
+
+SQLite migrates from schema 2 to 3 with a session-scoped speaker table and nullable caption fields. The migration left all six existing test sessions and 111 existing caption rows identical on their original fields. The database stores names, colors and caption assignments. Audio and embedding vectors stay in memory.
+
+### Paced pipeline benchmark
+
+Each row is a separate offline process on the Apple M5 Pro. All runs replayed the same 14 seconds of audio at wall-clock speed through the existing System Audio streaming code. The harness used Whisper Small Q8 with Metal, Silero 6.3, and warm MarianMT. CPU is average process use as a percentage of one core. Peak RSS includes recognition, translation, and the test process. Mean call latency covers 17 Whisper and four MarianMT calls in each run. The first timeline time is relative to playback start. Speaker RTF is time in native speaker analysis divided by 14 seconds of input.
+
+| Mode | CPU | Peak RSS | Whisper mean | MarianMT mean | First timeline | Native speaker RTF |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Off | 9.5% | 1.39 GiB | 126 ms | 136 ms | — | 0 |
+| Real-Time | 24.3% | 1.80 GiB | 123 ms | 141 ms | 2.12 s | 0.150 |
+| High Accuracy | 16.7% | 1.58 GiB | 123 ms | 133 ms | 5.22 s | 0.100 |
+
+The Off run performed zero speaker calls and created zero speaker drafts. The two enabled runs assigned speakers to three of four final captions. Metal remained in use for Whisper. GPU utilization was unmeasured. These single-run timings describe this Mac and workload.
+
+### Quality and release checks
+
+The 63-second fixture used four locally synthesized voices in English and Russian. It covers alternating speakers, two similar English voices, a short response, a paused sentence, added noise, music, quiet intervals, a return after quiet, and an intentional overlap. The reference uses each rendered utterance's known position in the mono mix. The reported exclusive-speaker error rate used 200 ms frames, a 250 ms collar at each turn boundary, one-to-one best matching of predicted IDs to reference identities, and excluded overlap from scoring. The fixture produced 145 scored speech frames, or 29.0 seconds.
+
+| Mode | Missed speech | False alarm | Confusion | Exclusive-speaker error | Estimated speakers |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Real-Time | 2.8 s | 0.0 s | 0.2 s | 10.3% | 4 of 4 |
+| High Accuracy | 0.6 s | 0.0 s | 2.4 s | 10.3% | 5 for 4 |
+
+Both modes marked the deliberate overlap and retained the first voice’s label on its return. Verification and native loading took 47 ms and 72 ms respectively for the two runs in the final suite. The restart check retained that speaker ID after advancing the same session’s fixture clock by over five minutes. A separate accelerated run analyzed 378 audio seconds in 377 windows, kept the same first-speaker ID across six repeats, and reported no queue lag. This yielded 42.47 seconds of native speaker analysis in 44.13 seconds elapsed.
+
+The signed Apple Silicon package passed strict signature checks. The offline suite reported 72 tests across five suites. The three opt-in checks ran separately for downloads, paced performance and extended analysis. The native and regression checks covered Whisper Q8, both translation backends, missing and corrupt speaker files, dual capture lifecycle, phrase boundaries, migration, rename, export and history deletion.
+
+The offline live QA recording completed at **3:56**. System Audio kept transcribing and translating during activation, deactivation, reactivation, Pause and Resume. Four IDs were stored, and no microphone caption received a speaker label. Replaying the same phrase while disabled produced a translation without a speaker. The returning voice after reactivation kept Speaker 1. History reopened the recording, displayed the renamed **Interviewer** label on four captions, and saved that label in the SRT. The floating panel opened while analysis was on.
+
+This corpus is too small to characterize general conversational accuracy. Short replies and closely matched voices can remain unknown, be grouped together, or get an additional profile. The app preserves whole Whisper segments at uncertain boundaries. Live QA used the Core Audio process tap. Long analysis used accelerated fixture playback, and quality on spontaneous multi-person recordings remains unmeasured.
+
+### Reproducing the checks
+
+```sh
+python3 Scripts/prepare-diarization-fixture.py .deps/diarization/fixtures
+export LOCALCAPTION_TEST_SPEAKER_MODELS=/path/to/Models
+export LOCALCAPTION_TEST_SPEAKER_FIXTURE="$PWD/.deps/diarization/fixtures"
+./Scripts/test.sh --filter RealDiarizationTests
+LOCALCAPTION_SPEAKER_STRESS=1 ./Scripts/test.sh --filter speakerProfilesRemainStableInExtendedStream
+LOCALCAPTION_TEST_MODELS=/path/to/Models \
+LOCALCAPTION_TEST_VAD63=/path/to/Models/silero-6.3/silero_vad.onnx \
+LOCALCAPTION_SPEAKER_BENCHMARK=realTime ./Scripts/test.sh --filter pacedSpeakerPipelineBenchmark
+```
+
+The last command also accepts `off` or `highAccuracy`. Python and local speech voices are used only to prepare the QA fixture.
+
+### Files changed
+
+- `Native/Inference.mm` and `Sources/CInference/inference.h` add native segmentation, feature extraction and embedding calls.
+- `Sources/CaptionCore/Diarization.swift`, `DiarizationSession.swift`, `Streaming.swift`, and `PhraseAggregation.swift` implement bounded inference, tracking, alignment and phrase boundaries.
+- `Sources/CaptionCore/Domain.swift`, `Repository.swift`, `Export.swift`, `ModelStore.swift`, and `Resources/Models.json` add model pins, speaker metadata, migration and exports.
+- `Sources/LocalCaption/AppModel.swift`, `PreferencesView.swift`, `TranscriptView.swift`, `HistoryView.swift`, `WorkspaceView.swift`, and `SubtitleWindow.swift` connect capture lifecycle, speaker controls, labels, renaming and export options.
+- `Tests/CaptionCoreTests/DiarizationTests.swift`, `InferenceTests.swift`, `Tests/LocalCaptionTests/SessionStartupTests.swift`, and `Scripts/prepare-diarization-fixture.py` cover tests and fixture preparation. `AppResources/Info.plist`, `README.md` and `MODEL-LICENSES.md` record the release and its offline setup.
+
 ## LocalCaption 1.3.0 Whisper Q8_0
 
 The app uses the multilingual Whisper Small and Large-v3 Turbo Q8_0 files published by whisper.cpp at revision `5359861c739e955e79d9a303bcbc70fb988958b1`. The downloaded bytes matched the repository's LFS SHA-256 and file sizes. The two GGML headers encode Q8_0 as `ftype=2007`, which whisper.cpp reads as quantization version 2 and type 7. LocalCaption uses the upstream conversions directly. The original models are MIT licensed. [Whisper.cpp model repository](https://huggingface.co/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1) · [OpenAI Whisper license](https://github.com/openai/whisper/blob/main/LICENSE)

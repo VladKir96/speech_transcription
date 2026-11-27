@@ -62,6 +62,16 @@ The live panels show recognized text while LocalCaption completes each phrase fo
 
 Use **Subtitles** in the toolbar or **⇧⌘L** in LocalCaption to show the floating panel. Set its sources, display mode, font size, opacity, and maximum lines in **Settings → Subtitles**. Drag the header to move it or an edge to resize it.
 
+## Speaker Diarization
+
+Diarization is off by default and applies to System Audio. Download **Pyannote Speaker Segmentation** and **WeSpeaker ResNet34-LM** in **Settings → Models**, then use **Speakers** in the System Audio header. You can turn it on or off during a recording. Existing speaker labels stay on their captions.
+
+**Settings → Speakers** controls the default state, detection mode, speaker count limit, similarity threshold, colors, and subtitle names. **Real-Time** uses rolling windows up to four seconds and updates about once a second. **High Accuracy** uses up to ten seconds and updates about every two seconds. A fixed speaker count caps the number of profiles. The default similarity threshold is 0.55.
+
+Click a speaker name in Live or History to rename it. **Rename Speaker…** is also available from the caption’s context menu. The name applies to all captions for that speaker in the session. TXT and JSON include available speaker data, and SRT offers **Include speaker names**. For a short or uncertain utterance, the app can show **Unknown Speaker**. A Whisper segment that crosses a turn or contains simultaneous speech can show **Mixed Speakers** or **Overlapping Speakers** with its original text intact.
+
+Speaker analysis runs in its own bounded worker with the bundled ONNX Runtime. The database stores speaker labels and caption assignments. Audio windows and embeddings stay in memory for the active session. [Model licenses](MODEL-LICENSES.md) · [Speaker verification and benchmarks](VERIFICATION.md#localcaption-140-speaker-diarization)
+
 ## History and export
 
 Finalized captions are saved incrementally. Live and saved transcripts show the newest captions first. While reading earlier captions in Live, choose **Back to Latest** to return to the current speech. **Load earlier captions** pages older text from the database.

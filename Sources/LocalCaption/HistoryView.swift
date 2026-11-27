@@ -65,8 +65,9 @@ struct HistoryView: View {
         }
         .sheet(isPresented: $exporting) {
             if let selected {
-                ExportOptions(defaultFormat: model.settings.exportFormat, defaultDisplay: model.settings.exportDisplay) { format, display in
-                    await model.exportHistory(selected, format: format, display: display)
+                ExportOptions(defaultFormat: model.settings.exportFormat, defaultDisplay: model.settings.exportDisplay,
+                              defaultSpeakerNames: model.settings.exportSpeakerNames ?? true) { format, display, names in
+                    await model.exportHistory(selected, format: format, display: display, includeSpeakerNames: names)
                 }
             }
         }
@@ -159,7 +160,7 @@ struct HistoryView: View {
                                                   if let index = segments.firstIndex(where: { $0.id == result.id }) {
                                                       segments[index] = result
                                                   }
-                                              })
+                                              }, speakerEditor: model)
                                 Divider()
                             }
                             if canLoadMoreSegments {

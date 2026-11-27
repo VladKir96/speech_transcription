@@ -41,6 +41,7 @@ public struct SampleBuffer: Sendable {
 public enum StreamEvent: Sendable {
     case partial(AudioSource, TranscriptSegment?)
     case pendingPhrase(AudioSource, TranscriptSegment?)
+    case speakerDrafts(AudioSource, [TranscriptSegment])
     case finalized(AudioSource, UUID, [TranscriptSegment])
     case activity(AudioSource, Double)
     case issue(AudioSource, String)
@@ -58,6 +59,11 @@ private struct SpeechWindow: Sendable {
 private enum SpeechWork {
     case recognize(SpeechWindow)
     case finishPhrase
+}
+
+private enum SpeakerPhraseWork {
+    case captions([TranscriptSegment])
+    case finish
 }
 
 public enum TranscriptReconciler {
@@ -100,6 +106,7 @@ public actor StreamingTranscription {
     private let sessionID: UUID
     private let options: SessionOptions
     private let engine: any SpeechRecognitionEngine
+    private let diarization: DiarizationSession?
     private let notify: @Sendable (StreamEvent) async -> Void
     private var vad: SileroDetector?
     private var vadCandidates: [URL]
@@ -129,14 +136,19 @@ public actor StreamingTranscription {
     private var translationPhraseStart: Double?
     private var lastVoiceEnd: Double?
     private var aggregation: PhraseAggregation
+    private var speakerWork: [SpeakerPhraseWork] = []
+    private var speakerWorker: Task<Void, Never>?
+    private var speakerDrafts: [TranscriptSegment] = []
 
     public init(source: AudioSource, sessionID: UUID, options: SessionOptions,
                 engine: any SpeechRecognitionEngine, vadURL: URL?, fallbackVADURL: URL? = nil,
+                diarization: DiarizationSession? = nil,
                 notify: @escaping @Sendable (StreamEvent) async -> Void) {
         self.source = source
         self.sessionID = sessionID
         self.options = options
         self.engine = engine
+        self.diarization = source == .system ? diarization : nil
         self.notify = notify
         aggregation = PhraseAggregation(pause: options.effectivePhrasePause,
                                         strategy: options.translationStrategy ?? .balanced)
@@ -155,6 +167,7 @@ public actor StreamingTranscription {
         await finalize(keepOverlap: false)
         finishTranslationPhrase()
         while let worker { await worker.value }
+        while let speakerWorker { await speakerWorker.value }
         vad = nil
     }
 
@@ -187,6 +200,7 @@ public actor StreamingTranscription {
     private func receive(_ chunk: AudioChunk) async {
         guard !chunk.samples.isEmpty, chunk.samples.count <= AudioChunk.rate,
               chunk.start.isFinite, chunk.start >= 0 else { return }
+        diarization?.offer(chunk)
         var samples = chunk.samples
         if let inputEnd, abs(chunk.start - inputEnd) > 0.18 {
             if chunk.start > inputEnd {
@@ -347,9 +361,8 @@ public actor StreamingTranscription {
                 case let .recognize(window):
                     await recognize(window)
                 case .finishPhrase:
-                    if let phrase = aggregation.finish() {
-                        await notify(.finalized(source, phrase.id, [phrase]))
-                    }
+                    if speakerWorker != nil { speakerWork.append(.finish) }
+                    else { await emitPhraseBoundary() }
                 }
             } else if let partial = latestPartial {
                 latestPartial = nil
@@ -383,14 +396,20 @@ public actor StreamingTranscription {
                 }
                 if options.translate {
                     await notify(.partial(source, nil))
-                    for segment in segments {
-                        if let complete = aggregation.accept(segment) {
-                            await notify(.finalized(source, complete.id, [complete]))
+                    let attributed = segments.map { diarization?.refresh($0) ?? $0 }
+                    if !attributed.isEmpty, speakerWorker != nil || diarization?.useSpeakerQueue(for: attributed) == true {
+                        while speakerWork.count >= 12 {
+                            try? await Task.sleep(for: .milliseconds(25))
                         }
+                        speakerWork.append(.captions(attributed))
+                        speakerDrafts.append(contentsOf: attributed)
+                        await notify(.speakerDrafts(source, speakerDrafts))
+                        if speakerWorker == nil { speakerWorker = Task { await drainSpeakerWork() } }
+                    } else {
+                        await addToPhrases(attributed, respectSpeakers: false)
                     }
-                    await notify(.pendingPhrase(source, aggregation.pending))
                 } else {
-                    await notify(.finalized(source, window.id, segments))
+                    await notify(.finalized(source, window.id, segments.map { diarization?.refresh($0) ?? $0 }))
                 }
             } else if pendingFinals.isEmpty && window.id == phraseID && !phrase.isEmpty {
                 let text = pieces.map(\.text).joined(separator: " ")
@@ -403,6 +422,41 @@ public actor StreamingTranscription {
             if window.final { await notify(.finalized(source, window.id, [])) }
             await notify(.issue(source, error.localizedDescription))
         }
+    }
+
+    private func drainSpeakerWork() async {
+        defer { speakerWorker = nil }
+        while !speakerWork.isEmpty {
+            switch speakerWork.removeFirst() {
+            case .finish:
+                await emitPhraseBoundary()
+            case let .captions(captions):
+                if let diarization, let last = captions.last, speakerWork.count < 4 {
+                    _ = await diarization.resolve(last, wait: true)
+                }
+                let updated = captions.map { diarization?.refresh($0) ?? $0 }
+                let ids = Set(captions.map(\.id))
+                speakerDrafts.removeAll { ids.contains($0.id) }
+                await notify(.speakerDrafts(source, speakerDrafts))
+                await addToPhrases(updated, respectSpeakers: diarization?.useSpeakerQueue(for: updated) == true)
+            }
+        }
+    }
+
+    private func emitPhraseBoundary() async {
+        if let phrase = aggregation.finish() {
+            await notify(.finalized(source, phrase.id, [phrase]))
+        }
+    }
+
+    private func addToPhrases(_ segments: [TranscriptSegment], respectSpeakers: Bool) async {
+        if respectSpeakers, let diarization { aggregation.refreshPending(using: diarization) }
+        for segment in segments {
+            if let complete = aggregation.accept(segment, respectSpeakers: respectSpeakers) {
+                await notify(.finalized(source, complete.id, [complete]))
+            }
+        }
+        await notify(.pendingPhrase(source, aggregation.pending))
     }
 
     private func makeSegment(id: UUID, start: Double, end: Double, text: String,

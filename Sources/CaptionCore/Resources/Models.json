@@ -1,5 +1,35 @@
 [
   {
+    "id": "speaker-segmentation",
+    "name": "Pyannote Speaker Segmentation",
+    "detail": "Detects speech turns and overlapping voices.",
+    "kind": "diarization",
+    "version": "3.0",
+    "license": "MIT",
+    "licenseURL": "https://huggingface.co/pyannote/segmentation-3.0/blob/main/LICENSE",
+    "assets": [{
+      "name": "pyannote-segmentation-3.0.onnx",
+      "url": "https://huggingface.co/onnx-community/pyannote-segmentation-3.0/resolve/733a93b6473d019a773298e08cefa686894b1854/onnx/model.onnx",
+      "sha256": "057ee564753071c0b09b5b611648b50ac188d50846bff5f01e9f7bbf1591ea25",
+      "bytes": 5986908
+    }]
+  },
+  {
+    "id": "speaker-embedding",
+    "name": "WeSpeaker ResNet34-LM",
+    "detail": "Matches voices within the current session.",
+    "kind": "diarization",
+    "version": "f0c48c2",
+    "license": "CC BY 4.0",
+    "licenseURL": "https://creativecommons.org/licenses/by/4.0/",
+    "assets": [{
+      "name": "voxceleb_resnet34_LM.onnx",
+      "url": "https://huggingface.co/Wespeaker/wespeaker-resnet34-LM/resolve/f0c48c298fd835726c27956a5d617bad7115627e/voxceleb_resnet34_LM.onnx",
+      "sha256": "7bb2f06e9df17cdf1ef14ee8a15ab08ed28e8d0ef5054ee135741560df2ec068",
+      "bytes": 26530309
+    }]
+  },
+  {
     "id": "small-q8",
     "name": "Whisper Small (Q8)",
     "detail": "Faster multilingual speech recognition with Q8_0 weights.",

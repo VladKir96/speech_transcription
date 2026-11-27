@@ -43,6 +43,8 @@ struct CaptionSettings: Codable {
     var overlayDisplay: CaptionDisplay = .both
     var overlayLines = 4
     var microphoneShortcut: MicrophoneShortcut?
+    var diarization: DiarizationOptions?
+    var exportSpeakerNames: Bool?
 }
 
 enum SignalStatus: Equatable {
@@ -68,6 +70,7 @@ struct TranscriptLane {
     var latest: [TranscriptSegment] = []
     var partial: TranscriptSegment?
     var pendingPhrase: TranscriptSegment?
+    var speakerDrafts: [TranscriptSegment] = []
     var issue: String?
     var total = 0
 }
@@ -107,6 +110,10 @@ private struct CaptureFeed {
     private(set) var repository: CaptionRepository?
     private(set) var modelStore: ModelStore?
     private(set) var unsaved: [TranscriptSegment] = []
+    private(set) var diarizationRequested = false
+    private(set) var diarizationStatus = DiarizationStatus.disabled
+    private(set) var diarizationIssue: String?
+    private var speakerNames: [UUID: String] = [:]
     var preferencesTab: PreferencesTab = .general
     var notice: String?
     var exportSuccess: String?
@@ -134,6 +141,8 @@ private struct CaptureFeed {
     private var terminating = false
     @ObservationIgnored private var initializing = false
     @ObservationIgnored private var pausedForStorage = false
+    @ObservationIgnored private var diarization: DiarizationSession?
+    @ObservationIgnored private var diarizationRevision = 0
 
     init(dataFolder: URL = AppModel.defaultFolder, defaults: UserDefaults? = .standard,
          dependencies: SessionDependencies = SessionDependencies()) {
@@ -153,6 +162,108 @@ private struct CaptureFeed {
     var activeCount: Int { lanes.values.filter { $0.status == .capturing }.count }
     var modelCatalog: [ModelDescriptor] { modelStore?.catalog ?? [] }
     var translationRetryActive: Bool { manualTranslation != nil }
+    var diarizationOptions: DiarizationOptions {
+        get { settings.diarization ?? DiarizationOptions() }
+        set { settings.diarization = newValue }
+    }
+    var speakerModelsInstalled: Bool { installed.contains("speaker-segmentation") && installed.contains("speaker-embedding") }
+
+    func toggleDiarization() {
+        if sessionActive {
+            diarizationRequested.toggle()
+            if diarizationRequested { startDiarization() }
+            else { suspendDiarization() }
+        } else {
+            diarizationOptions.enabledByDefault.toggle()
+        }
+    }
+
+    private func startDiarization() {
+        guard diarizationRequested, recording, let session, session.options.sources.contains(.system) else { return }
+        guard let feed = feeds[.system], let clock, let modelStore, let diarization else {
+            diarizationStatus = .unavailable
+            diarizationIssue = "Speaker Diarization requires an active System Audio source."
+            return
+        }
+        diarizationRevision += 1
+        let revision = diarizationRevision
+        let sessionID = session.id
+        let feedID = feed.id
+        diarizationStatus = .loading
+        diarizationIssue = nil
+        diarization.begin(models: modelStore, settings: diarizationOptions, after: clock.elapsed) { [weak self] event in
+            await self?.receiveDiarization(event, sessionID: sessionID, feedID: feedID, revision: revision)
+        }
+    }
+
+    private func suspendDiarization() {
+        diarizationRevision += 1
+        diarization?.stop(at: clock?.elapsed ?? elapsed)
+        diarizationStatus = .disabled
+        diarizationIssue = nil
+    }
+
+    private func receiveDiarization(_ event: DiarizationEvent, sessionID: UUID, feedID: UUID, revision: Int) async {
+        guard session?.id == sessionID, feeds[.system]?.id == feedID, diarizationRevision == revision else { return }
+        switch event {
+        case let .status(status, issue):
+            diarizationStatus = status
+            diarizationIssue = issue
+            if status == .unavailable, speakerModelsInstalled { await refreshModels() }
+        case .timelineUpdated:
+            guard let diarization, let liveRepository else { return }
+            if let draft = lanes[.system]?.partial { lanes[.system]?.partial = diarization.refresh(draft) }
+            if let draft = lanes[.system]?.pendingPhrase { lanes[.system]?.pendingPhrase = diarization.refresh(draft) }
+            let unknown = lanes[.system]?.latest.filter { $0.speakerStatus == .unknown && elapsed - $0.end <= 50 } ?? []
+            var changed = false
+            for segment in unknown {
+                let updated = diarization.refresh(segment)
+                guard let status = updated.speakerStatus, status != .unknown else { continue }
+                do {
+                    let saved = try await liveRepository.updateSpeaker(updated)
+                    guard diarizationRevision == revision, session?.id == sessionID else { break }
+                    if let index = unsaved.firstIndex(where: { $0.id == updated.id }) {
+                        var caption = unsaved[index]
+                        applySpeaker(updated, to: &caption)
+                        unsaved[index] = caption
+                    }
+                    guard saved, let index = lanes[.system]?.latest.firstIndex(where: { $0.id == updated.id }),
+                          var caption = lanes[.system]?.latest[index] else { continue }
+                    applySpeaker(updated, to: &caption)
+                    lanes[.system]?.latest[index] = caption
+                    changed = true
+                } catch {
+                    CaptureDiagnostics.failure("Saving a speaker label", error)
+                    diarizationIssue = "A speaker label could not be saved."
+                    break
+                }
+            }
+            if changed { historyRevision += 1 }
+        }
+    }
+
+    private func applySpeaker(_ from: TranscriptSegment, to caption: inout TranscriptSegment) {
+        caption.speakerID = from.speakerID
+        caption.speakerName = from.speakerID.flatMap { speakerNames[$0] } ?? from.speakerName
+        caption.speakerColor = from.speakerColor
+        caption.speakerStatus = from.speakerStatus
+        caption.speakerConfidence = from.speakerConfidence
+    }
+
+    func renameSpeaker(on segment: TranscriptSegment, to name: String) async {
+        let store = session?.id == segment.sessionID ? liveRepository : repository
+        guard let store, let id = segment.speakerID else { return }
+        let normalized = name.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        do {
+            try await store.renameSpeaker(id, session: segment.sessionID, name: normalized)
+            if session?.id == segment.sessionID {
+                speakerNames[id] = normalized
+            }
+            historyRevision += 1
+        } catch {
+            notice = error.localizedDescription
+        }
+    }
 
     func translationInstallation(_ model: TranslationModel) -> String? {
         let target = (sessionActive ? session?.options : nil)?.targetLanguage ?? settings.options.targetLanguage
@@ -233,7 +344,12 @@ private struct CaptureFeed {
     }
 
     func refreshModels() async {
-        if let modelStore { installed = await modelStore.installedIDs() }
+        if let modelStore {
+            installed = await modelStore.installedIDs()
+            if diarizationStatus == .unavailable && speakerModelsInstalled {
+                startDiarization()
+            }
+        }
     }
 
     func install(_ model: ModelDescriptor, from folder: URL? = nil) {
@@ -345,6 +461,9 @@ private struct CaptureFeed {
             created = true
             clock = newClock
             session = candidate
+            diarization = options.sources.contains(.system) ? DiarizationSession() : nil
+            diarizationRequested = diarizationOptions.enabledByDefault
+            speakerNames = [:]
             liveRepository = store
             elapsed = 0
             micRetryAt = 0
@@ -379,6 +498,7 @@ private struct CaptureFeed {
             try Task.checkCancellation()
             guard canRecord(current: candidate) else { throw CaptionFailure("The enabled audio sources disconnected during startup.") }
             _ = transition(.recording)
+            startDiarization()
             if !warnings.isEmpty { notice = warnings.joined(separator: " ") }
             startHeartbeat()
         } catch {
@@ -441,6 +561,7 @@ private struct CaptureFeed {
             try Task.checkCancellation()
             guard canRecord(current: session) else { throw CaptionFailure("The enabled audio sources disconnected while resuming.") }
             _ = transition(.recording)
+            startDiarization()
             startHeartbeat()
         } catch {
             await stopFeeds()
@@ -474,7 +595,8 @@ private struct CaptureFeed {
         if settings.autoExport, let folder = settings.exportFolder, let session {
             let timestamp = session.startedAt.formatted(.iso8601).replacingOccurrences(of: ":", with: "-")
             let url = folder.appendingPathComponent("LocalCaption-\(timestamp)-\(session.id.uuidString.prefix(8)).\(settings.exportFormat.rawValue)")
-            await export(session, from: liveRepository, to: url, format: settings.exportFormat, display: settings.exportDisplay)
+            await export(session, from: liveRepository, to: url, format: settings.exportFormat, display: settings.exportDisplay,
+                         includeSpeakerNames: settings.exportSpeakerNames ?? true)
         }
     }
 
@@ -497,6 +619,7 @@ private struct CaptureFeed {
                 }
                 lanes[source]?.partial = nil
                 lanes[source]?.pendingPhrase = nil
+                lanes[source]?.speakerDrafts = []
                 lanes[source]?.level = 0
                 if lanes[source]?.status.issue == nil {
                     lanes[source]?.status = session.options.sources.contains(source) ? .ready : .disabled
@@ -508,6 +631,8 @@ private struct CaptureFeed {
             session = current
         }
         await persistState()
+        diarization = nil
+        diarizationRequested = false
         historyRevision += 1
         Task { await translator.release() }
     }
@@ -631,7 +756,8 @@ private struct CaptureFeed {
         CaptureDiagnostics.session.debug("Preparing transcription pipeline; source=\(source.rawValue, privacy: .public)")
         let pair = AsyncStream<AudioChunk>.makeStream(bufferingPolicy: .bufferingNewest(96))
         let pipeline = StreamingTranscription(source: source, sessionID: session.id, options: session.options,
-            engine: recognizer, vadURL: vadModels.first, fallbackVADURL: vadModels.dropFirst().first) { [weak self] event in
+            engine: recognizer, vadURL: vadModels.first, fallbackVADURL: vadModels.dropFirst().first,
+            diarization: source == .system ? diarization : nil) { [weak self] event in
                 await self?.receive(event, sessionID: session.id)
             }
         let feed = CaptureFeed(id: UUID(), continuation: pair.continuation,
@@ -651,6 +777,7 @@ private struct CaptureFeed {
     }
 
     private func stopFeeds() async {
+        suspendDiarization()
         microphoneEpoch += 1
         microphoneRevision += 1
         microphoneOperation?.cancel()
@@ -667,6 +794,7 @@ private struct CaptureFeed {
         await stopped
         await finishFeed(.system)
         await micDrained
+        await diarization?.waitForShutdown()
     }
 
     private func discardFailedSystem() async {
@@ -682,6 +810,7 @@ private struct CaptureFeed {
         lanes[.system]?.status = .unavailable(error.localizedDescription)
         // During startup the owner of startCapture handles the same stream after it returns.
         guard phase == .recording else { return }
+        suspendDiarization()
         await dependencies.system.stop()
         await finishFeed(.system, id: id)
         await waitForOperation()
@@ -708,13 +837,16 @@ private struct CaptureFeed {
             lanes[source]?.partial = segment
         case let .pendingPhrase(source, segment):
             lanes[source]?.pendingPhrase = segment
+        case let .speakerDrafts(source, segments):
+            lanes[source]?.speakerDrafts = segments
         case let .finalized(source, phraseID, captured):
             if lanes[source]?.partial?.id == phraseID { lanes[source]?.partial = nil }
             if lanes[source]?.pendingPhrase?.id == phraseID { lanes[source]?.pendingPhrase = nil }
             guard !captured.isEmpty else { return }
             let engine = settings.options.translationModel
             let segments = captured.map { item in
-                var finalized = item
+                var finalized = item.speakerStatus == .unknown && source == .system
+                    ? diarization?.refresh(item) ?? item : item
                 if finalized.translationStatus == .pending {
                     finalized.translationModel = engine
                     finalized.translationModelVersion = engine.version
@@ -772,12 +904,18 @@ private struct CaptureFeed {
     private func applyTranslation(_ segment: TranscriptSegment) {
         guard session?.id == segment.sessionID,
               let index = lanes[segment.source]?.latest.firstIndex(where: { $0.id == segment.id }) else { return }
-        lanes[segment.source]?.latest[index] = segment
+        lanes[segment.source]?.latest[index].translation = segment.translation
+        lanes[segment.source]?.latest[index].translationStatus = segment.translationStatus
+        lanes[segment.source]?.latest[index].translationError = segment.translationError
+        lanes[segment.source]?.latest[index].translationModel = segment.translationModel
+        lanes[segment.source]?.latest[index].translationModelVersion = segment.translationModelVersion
     }
 
     func currentTranslation(for segment: TranscriptSegment) -> TranscriptSegment {
         guard session?.id == segment.sessionID else { return segment }
-        return lanes[segment.source]?.latest.first { $0.id == segment.id } ?? segment
+        var caption = lanes[segment.source]?.latest.first { $0.id == segment.id } ?? segment
+        if let speaker = caption.speakerID, let name = speakerNames[speaker] { caption.speakerName = name }
+        return caption
     }
 
     func canUseTranslation(_ engine: TranslationModel, for segment: TranscriptSegment) -> Bool {
@@ -918,13 +1056,15 @@ private struct CaptureFeed {
                                                  newestFirst: true, before: before)
     }
 
-    func exportCurrent(format: ExportFormat, display: CaptionDisplay) async {
+    func exportCurrent(format: ExportFormat, display: CaptionDisplay, includeSpeakerNames: Bool = true) async {
         guard let session else { return }
-        await presentExport(session, from: liveRepository, format: format, display: display)
+        await presentExport(session, from: liveRepository, format: format, display: display,
+                            includeSpeakerNames: includeSpeakerNames)
     }
 
-    func exportHistory(_ session: CaptionSession, format: ExportFormat, display: CaptionDisplay) async {
-        await presentExport(session, from: repository, format: format, display: display)
+    func exportHistory(_ session: CaptionSession, format: ExportFormat, display: CaptionDisplay,
+                       includeSpeakerNames: Bool = true) async {
+        await presentExport(session, from: repository, format: format, display: display, includeSpeakerNames: includeSpeakerNames)
     }
 
     func chooseExportFolder() async {
@@ -937,33 +1077,34 @@ private struct CaptureFeed {
     }
 
     private func presentExport(_ session: CaptionSession, from repository: CaptionRepository?,
-                               format: ExportFormat, display: CaptionDisplay) async {
+                               format: ExportFormat, display: CaptionDisplay, includeSpeakerNames: Bool) async {
         let panel = NSSavePanel()
         panel.canCreateDirectories = true
         panel.allowedContentTypes = [UTType(filenameExtension: format.rawValue) ?? .plainText]
         let safe = session.title.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
         panel.nameFieldStringValue = safe + "." + format.rawValue
         guard await panel.begin() == .OK, let url = panel.url else { return }
-        await export(session, from: repository, to: url, format: format, display: display)
+        await export(session, from: repository, to: url, format: format, display: display, includeSpeakerNames: includeSpeakerNames)
     }
 
     private func export(_ session: CaptionSession, from repository: CaptionRepository?, to url: URL,
-                        format: ExportFormat, display: CaptionDisplay) async {
+                        format: ExportFormat, display: CaptionDisplay, includeSpeakerNames: Bool) async {
         do {
             guard let repository else { throw CaptionFailure("There is no database available to export from.") }
-            let recovered = unsaved.filter { $0.sessionID == session.id }
+            let recovered = unsaved.filter { $0.sessionID == session.id }.map(currentTranslation(for:))
             let stored: [TranscriptSegment]
             do {
                 stored = try await repository.segments(session.id)
             } catch {
                 guard !recovered.isEmpty else { throw error }
                 let filename = url.deletingPathExtension().appendingPathExtension("recovery.\(format.rawValue)")
-                try await TranscriptExport.write(session, segments: recovered, format: format, display: display, to: filename)
+                try await TranscriptExport.write(session, segments: recovered, format: format, display: display,
+                                                 includeSpeakerNames: includeSpeakerNames, to: filename)
                 throw CaptionFailure("The database could not be read. Unsaved transcript was exported to \(filename.lastPathComponent).")
             }
             let ids = Set(stored.map(\.id))
             try await TranscriptExport.write(session, segments: stored + recovered.filter { !ids.contains($0.id) },
-                                             format: format, display: display, to: url)
+                                             format: format, display: display, includeSpeakerNames: includeSpeakerNames, to: url)
             exportSuccess = "Exported \(url.lastPathComponent)"
         } catch {
             notice = "Export failed. \(error.localizedDescription)"

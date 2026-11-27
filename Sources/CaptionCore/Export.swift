@@ -2,16 +2,19 @@ import Foundation
 
 public enum TranscriptExport {
     public static func write(_ session: CaptionSession, segments: [TranscriptSegment],
-                             format: ExportFormat, display: CaptionDisplay, to url: URL) async throws {
+                             format: ExportFormat, display: CaptionDisplay, includeSpeakerNames: Bool = true,
+                             to url: URL) async throws {
         let task = Task.detached(priority: .utility) {
-            let data = try render(session, segments: segments, format: format, display: display)
+            let data = try render(session, segments: segments, format: format, display: display,
+                                  includeSpeakerNames: includeSpeakerNames)
             try data.write(to: url, options: .atomic)
         }
         try await task.value
     }
 
     public static func render(_ session: CaptionSession, segments: [TranscriptSegment],
-                              format: ExportFormat, display: CaptionDisplay = .both) throws -> Data {
+                              format: ExportFormat, display: CaptionDisplay = .both,
+                              includeSpeakerNames: Bool = true) throws -> Data {
         let ordered = segments.filter(\.finalized).sorted {
             ($0.start, $0.end, $0.source.rawValue, $0.id.uuidString) <
                 ($1.start, $1.end, $1.source.rawValue, $1.id.uuidString)
@@ -28,11 +31,12 @@ public enum TranscriptExport {
                 let lines = lines(segment, display: display)
                 guard !lines.isEmpty else { return nil }
                 let span = "\(CaptionTime.clock(segment.start)) – \(CaptionTime.clock(segment.end))"
-                return "[\(span)] \(segment.source.title) (\(segment.language))\n" + lines.joined(separator: "\n")
+                let speaker = segment.speakerLabel.map { " [\($0)]" } ?? ""
+                return "[\(span)] \(segment.source.title) (\(segment.language))\(speaker)\n" + lines.joined(separator: "\n")
             }
             return Data(([heading] + transcript).joined(separator: "\n\n").appending("\n").utf8)
         case .srt:
-            return Data(srt(ordered, display: display).utf8)
+            return Data(srt(ordered, display: display, includeSpeakerNames: includeSpeakerNames).utf8)
         }
     }
 
@@ -58,20 +62,16 @@ public enum TranscriptExport {
         let begin: Bool
     }
 
-    private static func srt(_ segments: [TranscriptSegment], display: CaptionDisplay) -> String {
+    private static func srt(_ segments: [TranscriptSegment], display: CaptionDisplay, includeSpeakerNames: Bool) -> String {
         var events: [Event] = []
         var captions: [Int: String] = [:]
         for (index, segment) in segments.enumerated() {
-            let text = lines(segment, display: display).map {
-                $0.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-                    .replacingOccurrences(of: "-->", with: "→")
-                    .replacingOccurrences(of: "<", with: "‹")
-                    .replacingOccurrences(of: ">", with: "›")
-            }.filter { !$0.isEmpty }
+            let text = lines(segment, display: display).map(srtText).filter { !$0.isEmpty }
             guard !text.isEmpty else { continue }
             let start = CaptionTime.milliseconds(segment.start)
             let end = max(start + 1, CaptionTime.milliseconds(segment.end))
-            captions[index] = "\(segment.source.title) · " + text.joined(separator: "\n")
+            let speaker = includeSpeakerNames ? segment.speakerLabel.map { srtText($0) + ": " } : nil
+            captions[index] = "\(segment.source.title) · " + (speaker ?? "") + text.joined(separator: "\n")
             events.append(Event(time: start, index: index, begin: true))
             events.append(Event(time: end, index: index, begin: false))
         }
@@ -96,5 +96,12 @@ public enum TranscriptExport {
             last = now
         }
         return cues.joined(separator: "\n")
+    }
+
+    private static func srtText(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            .replacingOccurrences(of: "-->", with: "→")
+            .replacingOccurrences(of: "<", with: "‹")
+            .replacingOccurrences(of: ">", with: "›")
     }
 }

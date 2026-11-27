@@ -7,22 +7,57 @@ struct PhraseAggregation {
     let strategy: TranslationStrategy
     private(set) var pending: TranscriptSegment?
 
-    mutating func accept(_ next: TranscriptSegment) -> TranscriptSegment? {
+    mutating func refreshPending(using diarization: DiarizationSession) {
+        if let pending, pending.speakerStatus == .unknown {
+            self.pending = diarization.refresh(pending)
+        }
+    }
+
+    mutating func accept(_ next: TranscriptSegment, respectSpeakers: Bool = true) -> TranscriptSegment? {
         guard let current = pending else {
             pending = next
             return nil
         }
-        guard canJoin(current, next) else {
+        guard canJoin(current, next), !respectSpeakers || speakerCompatible(current, next) else {
             pending = next
             return current
         }
         let text = current.original.reversed().drop(while: { ".… ".contains($0) }).reversed()
         let joined = String(text) + " " + next.original
-        pending = TranscriptSegment(id: current.id, sessionID: current.sessionID, source: current.source,
+        var combined = TranscriptSegment(id: current.id, sessionID: current.sessionID, source: current.source,
             start: current.start, end: next.end, original: joined,
             language: current.language, finalized: true, createdAt: current.createdAt,
             translationStatus: current.translationStatus)
+        if current.speakerStatus == next.speakerStatus, current.speakerID == next.speakerID {
+            combined.speakerID = current.speakerID
+            combined.speakerName = current.speakerName
+            combined.speakerColor = current.speakerColor
+            combined.speakerStatus = current.speakerStatus
+            combined.speakerConfidence = zipConfidence(current.speakerConfidence, next.speakerConfidence)
+        } else if current.speakerStatus == .overlapping || next.speakerStatus == .overlapping {
+            combined.speakerStatus = .overlapping
+        } else if current.speakerStatus == .mixed || next.speakerStatus == .mixed
+                    || (current.speakerID != nil && next.speakerID != nil) {
+            combined.speakerStatus = .mixed
+        } else if current.speakerStatus != nil, next.speakerStatus != nil {
+            combined.speakerStatus = .unknown
+        }
+        pending = combined
         return nil
+    }
+
+    private func speakerCompatible(_ first: TranscriptSegment, _ second: TranscriptSegment) -> Bool {
+        if (first.speakerStatus == nil) != (second.speakerStatus == nil) { return false }
+        if [first.speakerStatus, second.speakerStatus].contains(where: { $0 == .mixed || $0 == .overlapping }) {
+            return false
+        }
+        if let a = first.speakerID, let b = second.speakerID { return a == b }
+        return true
+    }
+
+    private func zipConfidence(_ first: Double?, _ second: Double?) -> Double? {
+        guard let first, let second else { return nil }
+        return min(first, second)
     }
 
     mutating func finish() -> TranscriptSegment? {

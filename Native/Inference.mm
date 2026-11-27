@@ -9,10 +9,13 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -321,6 +324,181 @@ float lc_silero_onnx_probability(lc_silero_onnx *engine, const float *samples, i
 
 void lc_silero_onnx_reset(lc_silero_onnx *engine) { if (engine) engine->reset(); }
 void lc_silero_onnx_close(lc_silero_onnx *engine) { delete engine; }
+
+namespace {
+constexpr int speaker_rate = 16000;
+constexpr int speaker_emb_dim = 256;
+constexpr int mel_bins = 80;
+constexpr int frame_length = 400;
+constexpr int frame_shift = 160;
+constexpr int fft_size = 512;
+constexpr float pi = 3.14159265358979323846f;
+
+class SpeakerFeatures {
+    std::array<float, frame_length> hamming{};
+    std::array<int, fft_size> bit_reverse{};
+    std::array<std::complex<float>, fft_size / 2> twiddle{};
+    std::array<std::vector<std::pair<int, float>>, mel_bins> filters;
+
+    static float mel(float hz) { return 1127.0f * std::log1p(hz / 700.0f); }
+
+public:
+    SpeakerFeatures() {
+        for (int i = 0; i < frame_length; ++i) {
+            hamming[i] = 0.54f - 0.46f * std::cos(2 * pi * i / (frame_length - 1));
+        }
+        for (int i = 1; i < fft_size; ++i) {
+            bit_reverse[i] = (bit_reverse[i >> 1] >> 1) | ((i & 1) * (fft_size / 2));
+        }
+        for (int i = 0; i < fft_size / 2; ++i) {
+            twiddle[i] = std::polar(1.0f, -2 * pi * i / fft_size);
+        }
+        const float low = mel(20);
+        const float bin_width = (mel(speaker_rate / 2) - low) / (mel_bins + 1);
+        for (int band = 0; band < mel_bins; ++band) {
+            const float center = low + (band + 1) * bin_width;
+            for (int i = 0; i < fft_size / 2; ++i) {
+                const float weight = 1.0f - std::abs(mel(float(i * speaker_rate) / fft_size) - center) / bin_width;
+                if (weight > 0) filters[band].emplace_back(i, weight);
+            }
+        }
+    }
+
+    std::vector<float> compute(const float *pcm, int samples) const {
+        const int frames = 1 + (samples - frame_length) / frame_shift;
+        std::vector<float> features(frames * mel_bins);
+        std::array<float, mel_bins> means{};
+        std::array<std::complex<float>, fft_size> spectrum{};
+        for (int frame = 0; frame < frames; ++frame) {
+            const float *data = pcm + frame * frame_shift;
+            const float dc = std::accumulate(data, data + frame_length, 0.0f) / frame_length;
+            spectrum.fill(0);
+            float previous = data[0] - dc;
+            for (int i = 0; i < frame_length; ++i) {
+                const float sample = data[i] - dc;
+                spectrum[bit_reverse[i]] = (sample - 0.97f * previous) * (32768.0f * hamming[i]);
+                previous = sample;
+            }
+            for (int step = 2; step <= fft_size; step *= 2) {
+                for (int row = 0; row < fft_size; row += step) {
+                    for (int j = 0; j < step / 2; ++j) {
+                        const auto even = spectrum[row + j];
+                        const auto odd = twiddle[j * (fft_size / step)] * spectrum[row + j + step / 2];
+                        spectrum[row + j] = even + odd;
+                        spectrum[row + j + step / 2] = even - odd;
+                    }
+                }
+            }
+            std::array<float, fft_size / 2> power{};
+            for (int i = 0; i < fft_size / 2; ++i) power[i] = std::norm(spectrum[i]);
+            for (int band = 0; band < mel_bins; ++band) {
+                float energy = 0;
+                for (const auto &[bin, weight] : filters[band]) energy += power[bin] * weight;
+                const float value = std::log(std::max(energy, std::numeric_limits<float>::epsilon()));
+                features[frame * mel_bins + band] = value;
+                means[band] += value;
+            }
+        }
+        for (auto &mean : means) mean /= frames;
+        for (size_t i = 0; i < features.size(); ++i) features[i] -= means[i % mel_bins];
+        return features;
+    }
+};
+
+void check_speaker_pcm(const float *pcm, int count, int minimum, int maximum) {
+    if (!pcm || count < minimum || count > maximum ||
+        !std::all_of(pcm, pcm + count, [](float x) { return std::isfinite(x) && std::abs(x) <= 2; })) {
+        throw std::invalid_argument("Invalid normalized audio for speaker analysis.");
+    }
+}
+}
+
+struct lc_speaker_engine {
+    Ort::Session segmentation, embedding;
+    Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    SpeakerFeatures features;
+
+    lc_speaker_engine(const char *seg, const char *emb)
+        : segmentation(inference_environment(), seg, silero_options()),
+          embedding(inference_environment(), emb, silero_options()) {
+        using std::vector;
+        constexpr auto f32 = ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+        for (auto *session : {&segmentation, &embedding}) {
+            if (session->GetInputCount() != 1 || session->GetOutputCount() != 1)
+                throw std::runtime_error("Unsupported speaker model ports.");
+        }
+        validate_silero_port(segmentation, true, "input_values", f32, {1, 1, -1});
+        validate_silero_port(segmentation, false, "logits", f32, {1, -1, 7});
+        validate_silero_port(embedding, true, "feats", f32, {1, -1, mel_bins});
+        validate_silero_port(embedding, false, "embs", f32, {1, speaker_emb_dim});
+    }
+};
+
+lc_speaker_engine *lc_speaker_open(const char *seg, const char *emb, char **error) {
+    try {
+        if (!seg || !emb || !*seg || !*emb) throw std::invalid_argument("Speaker model paths are required.");
+        return new lc_speaker_engine(seg, emb);
+    } catch (const std::exception &exception) {
+        set_error(error, exception.what());
+        return nullptr;
+    }
+}
+
+void lc_speaker_close(lc_speaker_engine *engine) { delete engine; }
+
+int lc_speaker_segment(lc_speaker_engine *engine, const float *pcm, int count,
+                       unsigned char *activity, float *confidence, int capacity, char **error) {
+    try {
+        check_speaker_pcm(pcm, count, speaker_rate, 10 * speaker_rate);
+        if (!engine || !activity || !confidence || capacity < 1) throw std::invalid_argument("Missing speaker output.");
+        const int64_t shape[] = {1, 1, count};
+        const char *input = "input_values", *output = "logits";
+        auto audio = Ort::Value::CreateTensor<float>(engine->memory, const_cast<float *>(pcm), count, shape, 3);
+        auto result = engine->segmentation.Run(Ort::RunOptions{nullptr}, &input, &audio, 1, &output, 1);
+        const auto dims = result[0].GetTensorTypeAndShapeInfo().GetShape();
+        const int expected = 1 + (count - 991) / 270;
+        if (dims != std::vector<int64_t>{1, expected, 7} || expected > capacity)
+            throw std::runtime_error("Unexpected Pyannote speaker frame count.");
+        const float *logits = result[0].GetTensorData<float>();
+        constexpr unsigned char masks[] = {0, 1, 2, 4, 3, 5, 6};
+        for (int i = 0; i < expected; ++i) {
+            const float *row = logits + i * 7;
+            if (!std::all_of(row, row + 7, [](float x) { return std::isfinite(x); }))
+                throw std::runtime_error("Invalid Pyannote speaker probabilities.");
+            const auto best = std::max_element(row, row + 7);
+            activity[i] = masks[best - row];
+            confidence[i] = std::min(1.0f, std::exp(*best));
+        }
+        return expected;
+    } catch (const std::exception &exception) {
+        set_error(error, exception.what());
+        return -1;
+    }
+}
+
+bool lc_speaker_embed(lc_speaker_engine *engine, const float *pcm, int count,
+                      float *embedding, int capacity, char **error) {
+    try {
+        check_speaker_pcm(pcm, count, speaker_rate / 2, 4 * speaker_rate);
+        if (!engine || !embedding || capacity != speaker_emb_dim)
+            throw std::invalid_argument("Incorrect speaker embedding output size.");
+        auto features = engine->features.compute(pcm, count);
+        const int64_t shape[] = {1, static_cast<int64_t>(features.size() / mel_bins), mel_bins};
+        const char *input = "feats", *output = "embs";
+        auto data = Ort::Value::CreateTensor<float>(engine->memory, features.data(), features.size(), shape, 3);
+        auto result = engine->embedding.Run(Ort::RunOptions{nullptr}, &input, &data, 1, &output, 1);
+        if (result[0].GetTensorTypeAndShapeInfo().GetShape() != std::vector<int64_t>{1, speaker_emb_dim})
+            throw std::runtime_error("Unexpected WeSpeaker embedding shape.");
+        const float *result_data = result[0].GetTensorData<float>();
+        const float length = std::sqrt(std::inner_product(result_data, result_data + speaker_emb_dim, result_data, 0.0f));
+        if (!std::isfinite(length) || length <= 0.00001f) throw std::runtime_error("Invalid WeSpeaker embedding.");
+        for (int i = 0; i < speaker_emb_dim; ++i) embedding[i] = result_data[i] / length;
+        return true;
+    } catch (const std::exception &exception) {
+        set_error(error, exception.what());
+        return false;
+    }
+}
 
 static NSDictionary *json_dictionary(const std::string &path) {
     NSString *filename = [NSString stringWithUTF8String:path.c_str()];

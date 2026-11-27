@@ -83,6 +83,7 @@ public actor CaptionRepository {
             var capacity: [UUID: Int] = [:]
             var saved: [TranscriptSegment] = []
             for var segment in segments where segment.finalized {
+                try saveSpeaker(for: segment)
                 if segment.translationStatus == .pending {
                     let available = try capacity[segment.sessionID] ?? availableTranslationSlots(segment.sessionID)
                     capacity[segment.sessionID] = available
@@ -94,15 +95,18 @@ public actor CaptionRepository {
                 try connection.execute("""
                     INSERT INTO segments (id, session_id, source, start, end, original, language, created,
                                           translation, translation_status, translation_error, searchable,
-                                          translation_model, translation_model_version)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                          translation_model, translation_model_version,
+                                          speaker_id, speaker_status, speaker_confidence)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO NOTHING
                     """, [
                         .text(segment.id.uuidString), .text(segment.sessionID.uuidString), .text(segment.source.rawValue),
                         .number(segment.start), .number(segment.end), .text(segment.original), .text(segment.language),
                         .date(segment.createdAt), .optional(segment.translation), .text(segment.translationStatus.rawValue),
                         .optional(segment.translationError), .text(Self.searchText(segment.original, segment.translation)),
-                        .optional(segment.translationModel?.rawValue), .optional(segment.translationModelVersion)
+                        .optional(segment.translationModel?.rawValue), .optional(segment.translationModelVersion),
+                        .optional(segment.speakerID?.uuidString), .optional(segment.speakerStatus?.rawValue),
+                        segment.speakerConfidence.map(SQLiteValue.number) ?? .null
                     ])
                 if connection.changed == 1 {
                     if segment.translationStatus == .pending { capacity[segment.sessionID, default: 0] -= 1 }
@@ -111,6 +115,53 @@ public actor CaptionRepository {
             }
             return saved
         }
+    }
+
+    private func saveSpeaker(for segment: TranscriptSegment) throws {
+        guard let speaker = segment.speakerID else { return }
+        guard segment.source == .system, let name = segment.speakerName, let color = segment.speakerColor else {
+            throw CaptionFailure("The caption contains invalid speaker metadata.")
+        }
+        try connection.execute("""
+            INSERT INTO speakers (id, session_id, display_name, color, created)
+            VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING
+            """, [.text(speaker.uuidString), .text(segment.sessionID.uuidString), .text(name),
+                  .number(Double(color)), .date(segment.createdAt)])
+        let owner = try connection.query("SELECT session_id FROM speakers WHERE id = ?",
+                                         [.text(speaker.uuidString)]) { $0.text(0) }.first
+        guard owner == segment.sessionID.uuidString else {
+            throw CaptionFailure("The speaker belongs to a different session.")
+        }
+    }
+
+    @discardableResult
+    public func updateSpeaker(_ segment: TranscriptSegment) throws -> Bool {
+        guard segment.source == .system, let status = segment.speakerStatus, status != .unknown else { return false }
+        return try connection.transaction {
+            let keys: [SQLiteValue] = [.text(segment.id.uuidString), .text(segment.sessionID.uuidString)]
+            let eligible = try connection.query("""
+                SELECT 1 FROM segments WHERE id = ? AND session_id = ? AND source = 'system' AND speaker_status = 'unknown'
+                """, keys) { $0.number(0) }.first
+            guard eligible != nil else { return false }
+            try saveSpeaker(for: segment)
+            try connection.execute("""
+                UPDATE segments SET speaker_id = ?, speaker_status = ?, speaker_confidence = ?
+                WHERE id = ? AND session_id = ?
+                """, [.optional(segment.speakerID?.uuidString), .text(status.rawValue),
+                      segment.speakerConfidence.map(SQLiteValue.number) ?? .null] + keys)
+            return connection.changed == 1
+        }
+    }
+
+    public func renameSpeaker(_ speaker: UUID, session: UUID, name: String) throws {
+        let normalized = name.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard !normalized.isEmpty, normalized.count <= 60 else {
+            throw CaptionFailure("Enter a speaker name of 1 to 60 characters.")
+        }
+        try connection.execute("""
+            UPDATE speakers SET display_name = ? WHERE id = ? AND session_id = ?
+            """, [.text(normalized), .text(speaker.uuidString), .text(session.uuidString)])
+        guard connection.changed == 1 else { throw CaptionFailure("The speaker could not be found in this session.") }
     }
 
     private func availableTranslationSlots(_ session: UUID) throws -> Int {
@@ -216,7 +267,9 @@ public actor CaptionRepository {
     private static let sessionColumns = "id, title, created, started, ended, duration, status, options"
     private static let segmentColumns = """
         id, session_id, source, start, end, original, language, created, translation, translation_status, translation_error,
-        translation_model, translation_model_version
+        translation_model, translation_model_version, speaker_id, speaker_status, speaker_confidence,
+        (SELECT display_name FROM speakers WHERE speakers.id = segments.speaker_id AND speakers.session_id = segments.session_id),
+        (SELECT color FROM speakers WHERE speakers.id = segments.speaker_id AND speakers.session_id = segments.session_id)
         """
 
     private static func searchText(_ original: String, _ translation: String?) -> String {
@@ -252,6 +305,11 @@ public actor CaptionRepository {
         result.translationError = row.optional(10)
         result.translationModel = row.optional(11).flatMap(TranslationModel.init(rawValue:))
         result.translationModelVersion = row.optional(12)
+        result.speakerID = row.optional(13).flatMap(UUID.init(uuidString:))
+        result.speakerStatus = row.optional(14).flatMap(SpeakerStatus.init(rawValue:))
+        result.speakerConfidence = row.isNull(15) ? nil : row.number(15)
+        result.speakerName = row.optional(16)
+        result.speakerColor = row.isNull(17) ? nil : Int(row.number(17))
         return result
     }
 }
@@ -322,7 +380,7 @@ private final class SQLiteConnection: @unchecked Sendable {
 
     func migrate() throws {
         let version = try query("PRAGMA user_version", [], { Int($0.number(0)) }).first ?? 0
-        guard version <= 2 else { throw CaptionFailure("This database was created by a newer version of LocalCaption.") }
+        guard version <= 3 else { throw CaptionFailure("This database was created by a newer version of LocalCaption.") }
         if version == 0 {
             try transaction {
                 try script("""
@@ -352,6 +410,21 @@ private final class SQLiteConnection: @unchecked Sendable {
                     ALTER TABLE segments ADD COLUMN translation_model TEXT;
                     ALTER TABLE segments ADD COLUMN translation_model_version TEXT;
                     PRAGMA user_version = 2;
+                    """)
+            }
+        }
+        if version <= 2 {
+            try transaction {
+                try script("""
+                    CREATE TABLE speakers (
+                        id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                        display_name TEXT NOT NULL, color INTEGER NOT NULL, created REAL NOT NULL
+                    );
+                    CREATE INDEX speakers_by_session ON speakers(session_id);
+                    ALTER TABLE segments ADD COLUMN speaker_id TEXT REFERENCES speakers(id) ON DELETE SET NULL;
+                    ALTER TABLE segments ADD COLUMN speaker_status TEXT;
+                    ALTER TABLE segments ADD COLUMN speaker_confidence REAL;
+                    PRAGMA user_version = 3;
                     """)
             }
         }

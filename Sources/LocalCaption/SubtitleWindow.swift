@@ -63,16 +63,21 @@ private struct SubtitleContent: View {
     private var display: CaptionDisplay { model.settings.overlayDisplay }
     private var foreground: Color { scheme == .dark ? .white : Color(red: 0.08, green: 0.10, blue: 0.13) }
     private var backing: Color { scheme == .dark ? .black : .white }
+    private func named(_ text: String, segment: TranscriptSegment) -> String {
+        guard model.diarizationRequested, model.diarizationOptions.subtitleNames,
+              let speaker = model.currentTranslation(for: segment).speakerLabel else { return text }
+        return "\(speaker): \(text)"
+    }
     private var rows: [Row] {
         let sources = AudioSource.allCases.filter { model.settings.overlaySources.contains($0) }
         return sources.compactMap { source in
             guard let lane = model.lanes[source] else { return nil }
             if display == .translated {
                 guard let last = lane.latest.first(where: { $0.translation != nil || $0.translationStatus == .sameLanguage }) else { return nil }
-                return Row(source: source, start: last.start, text: last.translation ?? last.original, secondary: nil)
+                return Row(source: source, start: last.start, text: named(last.translation ?? last.original, segment: last), secondary: nil)
             }
-            guard let last = lane.partial ?? lane.pendingPhrase ?? lane.latest.first else { return nil }
-            return Row(source: source, start: last.start, text: last.original,
+            guard let last = lane.partial ?? lane.speakerDrafts.last ?? lane.pendingPhrase ?? lane.latest.first else { return nil }
+            return Row(source: source, start: last.start, text: named(last.original, segment: last),
                        secondary: display == .both ? last.translation : nil)
         }.sorted { ($0.start, $0.source.rawValue) > ($1.start, $1.source.rawValue) }
     }

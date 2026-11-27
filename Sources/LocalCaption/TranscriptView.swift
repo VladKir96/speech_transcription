@@ -2,11 +2,12 @@ import CaptionCore
 import SwiftUI
 
 struct TranscriptColumn: View {
+    @Environment(\.openSettings) private var openSettings
     let model: AppModel
     let source: AudioSource
     private enum Target: Hashable {
         case latest
-        case partial(UUID), draftPhrase(UUID), caption(UUID)
+        case partial(UUID), draftPhrase(UUID), speakerDraft(UUID), caption(UUID)
     }
 
     @State private var position: Target? = .latest
@@ -23,7 +24,23 @@ struct TranscriptColumn: View {
         VStack(spacing: 0) {
             header
             Divider()
-            if segments.isEmpty, lane.partial == nil, lane.pendingPhrase == nil {
+            if source == .system, let issue = model.diarizationIssue {
+                HStack(spacing: 8) {
+                    Text(issue).font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    if model.diarizationStatus == .unavailable {
+                        Button("Models…") {
+                            model.preferencesTab = .models
+                            openSettings()
+                        }
+                        .buttonStyle(.link)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 7)
+                Divider()
+            }
+            if segments.isEmpty, lane.partial == nil, lane.pendingPhrase == nil, lane.speakerDrafts.isEmpty {
                 empty
             } else {
                 transcript
@@ -53,6 +70,7 @@ struct TranscriptColumn: View {
                 .font(.caption)
             }
             Spacer()
+            if source == .system { diarizationButton }
             if page != nil { ProgressView().controlSize(.mini) }
             if lane.status == .capturing {
                 SignalMeter(level: lane.level, color: color)
@@ -67,6 +85,24 @@ struct TranscriptColumn: View {
         }
         .padding(.horizontal, 18)
         .frame(height: 67)
+    }
+
+    private var diarizationButton: some View {
+        let selected = model.sessionActive ? model.diarizationRequested : model.diarizationOptions.enabledByDefault
+        let status = model.sessionActive ? model.diarizationStatus.title : (selected ? "On" : "Off")
+        return Button {
+            model.toggleDiarization()
+        } label: {
+            Label("Speakers \(status)", systemImage: "person.2.wave.2")
+                .font(.caption)
+        }
+        .buttonStyle(.bordered)
+        .tint(selected ? color : .secondary)
+        .help(model.diarizationIssue ?? "Speaker Diarization for System Audio")
+        .accessibilityLabel("Speaker Diarization")
+        .accessibilityValue(status)
+        .disabled(model.busy || !(model.session?.options.sources.contains(.system) == true && model.sessionActive
+            || !model.sessionActive && model.settings.options.sources.contains(.system)))
     }
 
     private var empty: some View {
@@ -111,12 +147,22 @@ struct TranscriptColumn: View {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     Color.clear.frame(height: 1).id(Target.latest).accessibilityHidden(true)
                     if archived == nil, let partial = lane.partial, model.settings.showOriginal {
-                        TranscriptRow(segment: partial, showOriginal: true, showTranslation: false, showSource: false)
+                        TranscriptRow(segment: partial, showOriginal: true, showTranslation: false, showSource: false,
+                                      colorSpeakers: model.diarizationOptions.colorSpeakers)
                             .id(Target.partial(partial.id))
+                    }
+                    if archived == nil {
+                        ForEach(lane.speakerDrafts.reversed().filter { $0.id != lane.pendingPhrase?.id && $0.id != lane.partial?.id }) { draft in
+                            TranscriptRow(segment: draft, showOriginal: model.settings.showOriginal,
+                                          showTranslation: false, showSource: false,
+                                          colorSpeakers: model.diarizationOptions.colorSpeakers)
+                                .id(Target.speakerDraft(draft.id))
+                        }
                     }
                     if archived == nil, let phrase = lane.pendingPhrase, phrase.id != lane.partial?.id {
                         TranscriptRow(segment: phrase, showOriginal: model.settings.showOriginal,
-                                      showTranslation: showTranslation, showSource: false, waitingForPhrase: true)
+                                      showTranslation: showTranslation, showSource: false, waitingForPhrase: true,
+                                      colorSpeakers: model.diarizationOptions.colorSpeakers)
                             .id(Target.draftPhrase(phrase.id))
                     }
                     ForEach(segments) { segment in
@@ -124,7 +170,8 @@ struct TranscriptColumn: View {
                             let current = model.currentTranslation(for: segment)
                             TranscriptRow(segment: current, showOriginal: model.settings.showOriginal,
                                           showTranslation: showTranslation, showSource: false,
-                                          retry: showTranslation ? TranslationRetryAction(model: model, segment: current) : nil)
+                                          retry: showTranslation ? TranslationRetryAction(model: model, segment: current) : nil,
+                                          speakerEditor: model)
                             Divider().overlay(Palette.border)
                         }
                         .id(Target.caption(segment.id))
@@ -222,6 +269,10 @@ struct TranscriptRow: View {
     let showSource: Bool
     var waitingForPhrase = false
     var retry: TranslationRetryAction?
+    var speakerEditor: AppModel?
+    var colorSpeakers = true
+    @State private var renamingSpeaker = false
+    @State private var speakerName = ""
 
     private var language: String {
         Locale.current.localizedString(forLanguageCode: segment.language) ?? segment.language.uppercased()
@@ -235,6 +286,16 @@ struct TranscriptRow: View {
                     Text(segment.source.title).foregroundStyle(Palette.color(segment.source))
                 }
                 if segment.language != "auto" { Text(language) }
+                if let label = segment.speakerLabel {
+                    if canRenameSpeaker {
+                        Button(action: beginSpeakerRename) { speakerBadge(label) }
+                            .buttonStyle(.plain)
+                            .help("Rename speaker")
+                            .accessibilityLabel("Rename \(label)")
+                    } else {
+                        speakerBadge(label)
+                    }
+                }
                 if waitingForPhrase {
                     Text("Completing phrase…").foregroundStyle(.secondary)
                 } else if !segment.finalized {
@@ -276,6 +337,32 @@ struct TranscriptRow: View {
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 11)
+        .contextMenu {
+            if canRenameSpeaker { Button("Rename Speaker…", action: beginSpeakerRename) }
+        }
+        .alert("Rename Speaker", isPresented: $renamingSpeaker) {
+            TextField("Speaker name", text: $speakerName)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") { Task { await speakerEditor?.renameSpeaker(on: segment, to: speakerName) } }
+        }
+    }
+
+    private var canRenameSpeaker: Bool { segment.finalized && segment.speakerID != nil && speakerEditor != nil }
+
+    private func beginSpeakerRename() {
+        speakerName = segment.speakerName ?? ""
+        renamingSpeaker = true
+    }
+
+    private func speakerBadge(_ label: String) -> some View {
+        HStack(spacing: 4) {
+            if let index = segment.speakerColor, speakerEditor?.diarizationOptions.colorSpeakers ?? colorSpeakers {
+                let colors: [Color] = [.blue, .orange, .purple, .teal, .pink, .green, .indigo, .yellow, .cyan, .brown]
+                Circle().fill(colors[max(0, index) % colors.count])
+                    .frame(width: 7, height: 7).accessibilityHidden(true)
+            }
+            Text(label).fontWeight(.semibold).lineLimit(1)
+        }
     }
 }
 
@@ -309,12 +396,14 @@ struct ExportOptions: View {
     @Environment(\.dismiss) private var dismiss
     @State var format: ExportFormat
     @State var display: CaptionDisplay
-    let export: (ExportFormat, CaptionDisplay) async -> Void
+    @State var includeSpeakerNames: Bool
+    let export: (ExportFormat, CaptionDisplay, Bool) async -> Void
 
-    init(defaultFormat: ExportFormat, defaultDisplay: CaptionDisplay,
-         export: @escaping (ExportFormat, CaptionDisplay) async -> Void) {
+    init(defaultFormat: ExportFormat, defaultDisplay: CaptionDisplay, defaultSpeakerNames: Bool,
+         export: @escaping (ExportFormat, CaptionDisplay, Bool) async -> Void) {
         _format = State(initialValue: defaultFormat)
         _display = State(initialValue: defaultDisplay)
+        _includeSpeakerNames = State(initialValue: defaultSpeakerNames)
         self.export = export
     }
 
@@ -330,6 +419,7 @@ struct ExportOptions: View {
                         ForEach(CaptionDisplay.allCases) { Text($0.title).tag($0) }
                     }
                 }
+                if format == .srt { Toggle("Include speaker names", isOn: $includeSpeakerNames) }
             }
             HStack {
                 Spacer()
@@ -337,10 +427,11 @@ struct ExportOptions: View {
                 Button("Choose Destination…") {
                     let chosenFormat = format
                     let chosenDisplay = display
+                    let chosenNames = includeSpeakerNames
                     dismiss()
                     Task {
                         try? await Task.sleep(for: .milliseconds(180))
-                        await export(chosenFormat, chosenDisplay)
+                        await export(chosenFormat, chosenDisplay, chosenNames)
                     }
                 }
                 .keyboardShortcut(.defaultAction)

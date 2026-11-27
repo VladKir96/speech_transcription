@@ -217,7 +217,7 @@ func whisperUpgradePreservesAndValidatesTheLegacyModel(_ selection: WhisperModel
 
 @Test func recognitionCatalogListsOnlyCurrentModels() throws {
     let store = try ModelStore(directory: FileManager.default.temporaryDirectory)
-    let speechAndVAD = store.catalog.filter { $0.kind != .translation }
+    let speechAndVAD = store.catalog.filter { $0.kind == .speech || $0.kind == .vad }
     #expect(speechAndVAD.map(\.name) == ["Whisper Small (Q8)", "Whisper Large-v3 Turbo (Q8)", "Silero VAD 6.3"])
     #expect(["small", "turbo", "silero"].allSatisfy { store.descriptor($0) != nil })
 }
@@ -286,7 +286,7 @@ private actor Events {
                 if firstPartialAt == nil { firstPartialAt = ContinuousClock().now }
             }
         case let .issue(_, reason): issues.append(reason)
-        case .activity, .pendingPhrase: break
+        case .activity, .pendingPhrase, .speakerDrafts: break
         }
     }
 }

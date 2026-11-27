@@ -187,6 +187,28 @@ public struct TranscriptSegment: Codable, Identifiable, Sendable, Equatable {
     public var translationError: String?
     public var translationModel: TranslationModel?
     public var translationModelVersion: String?
+    public var speakerID: UUID?
+    public var speakerName: String?
+    public var speakerColor: Int?
+    public var speakerStatus: SpeakerStatus?
+    public var speakerConfidence: Double?
+
+    public var speakerLabel: String? {
+        switch speakerStatus {
+        case .assigned: speakerName
+        case .unknown: "Unknown Speaker"
+        case .mixed: "Mixed Speakers"
+        case .overlapping: "Overlapping Speakers"
+        case nil: nil
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, sessionID, source, start, end, original, language, finalized, createdAt
+        case translation, translationStatus, translationError, translationModel, translationModelVersion
+        case speakerID = "speaker_id", speakerName = "speaker_name", speakerColor = "speaker_color"
+        case speakerStatus = "speaker_status", speakerConfidence = "speaker_confidence"
+    }
 
     public init(id: UUID = UUID(), sessionID: UUID, source: AudioSource, start: Double, end: Double,
                 original: String, language: String, finalized: Bool, createdAt: Date = .now,

@@ -3,14 +3,15 @@ import CaptionCore
 import SwiftUI
 
 enum PreferencesTab: String, CaseIterable, Identifiable {
-    case general, audio, recognition, translation, subtitles, storage, models
+    case general, audio, recognition, diarization, translation, subtitles, storage, models
     var id: String { rawValue }
-    var title: String { rawValue.capitalized }
+    var title: String { self == .diarization ? "Speakers" : rawValue.capitalized }
     var icon: String {
         switch self {
         case .general: "gearshape"
         case .audio: "speaker.wave.2"
         case .recognition: "waveform"
+        case .diarization: "person.2.wave.2"
         case .translation: "character.bubble"
         case .subtitles: "captions.bubble"
         case .storage: "internaldrive"
@@ -22,6 +23,7 @@ enum PreferencesTab: String, CaseIterable, Identifiable {
 struct PreferencesView: View {
     @Bindable var model: AppModel
     @State private var removal: ModelDescriptor?
+    @State private var speakerDownload: ModelDescriptor?
 
     var body: some View {
         TabView(selection: $model.preferencesTab) {
@@ -31,6 +33,7 @@ struct PreferencesView: View {
                     case .general: general
                     case .audio: audio
                     case .recognition: recognition
+                    case .diarization: speakerSettings
                     case .translation: translation
                     case .subtitles: subtitles
                     case .storage: storage
@@ -52,6 +55,14 @@ struct PreferencesView: View {
         } message: { item in
             Text(item.requiresImport ? "You can install it again from a prepared model folder."
                 : "You can download this model again from Settings.")
+        }
+        .confirmationDialog("Download speaker model?", isPresented: Binding(
+            get: { speakerDownload != nil }, set: { if !$0 { speakerDownload = nil } }
+        ), titleVisibility: .visible, presenting: speakerDownload) { item in
+            Button("Download") { model.install(item) }
+            Button("Cancel", role: .cancel) {}
+        } message: { item in
+            Text("\(item.name) · \(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file)) · \(item.license ?? "")")
         }
     }
 
@@ -254,6 +265,46 @@ struct PreferencesView: View {
         .formStyle(.grouped)
     }
 
+    private var speakerSettings: some View {
+        Form {
+            Section("Speaker Diarization") {
+                Toggle("Enable Speaker Diarization by Default", isOn: $model.diarizationOptions.enabledByDefault)
+                if !model.speakerModelsInstalled {
+                    Text("Install both speaker models to label voices in System Audio.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button("Manage Speaker Models…") { model.preferencesTab = .models }
+                }
+            }
+            Section("Detection") {
+                Picker("Detection Mode", selection: $model.diarizationOptions.mode) {
+                    ForEach(DiarizationMode.allCases) { Text($0.title).tag($0) }
+                }
+                Picker("Expected Number of Speakers", selection: $model.diarizationOptions.speakerLimit) {
+                    Text("Auto Detect").tag(0)
+                    ForEach(1...10, id: \.self) { Text("\($0)").tag($0) }
+                }
+                Text("A fixed count limits the number of speaker profiles. Uncertain speech can remain unlabeled.")
+                    .font(.callout).foregroundStyle(.secondary)
+                HStack {
+                    Slider(value: $model.diarizationOptions.similarity, in: 0.3...0.85, step: 0.01) {
+                        Text("Speaker Similarity Threshold")
+                    }
+                    Text(model.diarizationOptions.similarity, format: .number.precision(.fractionLength(2)))
+                        .monospacedDigit()
+                }
+                Text("Lower values merge similar voices more readily. Higher values make separate profiles more likely.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Toggle("Speaker-Aware Phrase Aggregation", isOn: $model.diarizationOptions.speakerAwarePhrases)
+            }
+            .disabled(!model.speakerModelsInstalled || model.sessionActive)
+            Section("Display") {
+                Toggle("Color-Code Speakers", isOn: $model.diarizationOptions.colorSpeakers)
+                Toggle("Show Speaker Names in Floating Subtitles", isOn: $model.diarizationOptions.subtitleNames)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
     private var subtitles: some View {
         Form {
             Section("Floating subtitles") {
@@ -301,6 +352,12 @@ struct PreferencesView: View {
                 Picker("Default format", selection: $model.settings.exportFormat) {
                     ForEach(ExportFormat.allCases) { Text($0.title).tag($0) }
                 }
+                if model.settings.exportFormat == .srt {
+                    Toggle("Include speaker names", isOn: Binding(
+                        get: { model.settings.exportSpeakerNames ?? true },
+                        set: { model.settings.exportSpeakerNames = $0 }
+                    ))
+                }
                 Picker("Include", selection: $model.settings.exportDisplay) {
                     ForEach(CaptionDisplay.allCases) { Text($0.title).tag($0) }
                 }
@@ -332,6 +389,9 @@ struct PreferencesView: View {
             }
             Section("Translation") {
                 ForEach(model.modelCatalog.filter { $0.kind == .translation }) { modelRow($0) }
+            }
+            Section("Speaker Diarization Models") {
+                ForEach(model.modelCatalog.filter { $0.kind == .diarization }) { modelRow($0) }
             }
         }
         .formStyle(.grouped)
@@ -371,7 +431,10 @@ struct PreferencesView: View {
                 } else if item.requiresImport {
                     Button("Install from Folder…") { Task { await importModel(item) } }
                 } else {
-                    Button("Download") { model.install(item) }
+                    Button("Download") {
+                        if item.kind == .diarization { speakerDownload = item }
+                        else { model.install(item) }
+                    }
                 }
             }
             if let progress = model.downloadProgress[item.id] {
