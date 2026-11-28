@@ -6,6 +6,7 @@ if [[ "$(uname -m)" != arm64 ]]; then
     exit 1
 fi
 mkdir -p .deps/assets .deps/native
+bash Scripts/bootstrap-sparkle.sh
 
 fetch() {
     local url="$1" file="$2" expected="$3"

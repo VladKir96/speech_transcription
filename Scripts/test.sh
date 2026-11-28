@@ -7,6 +7,7 @@ if [[ ! -f .deps/native/libcaption_inference.dylib || ! -f .deps/native/libctran
       Sources/CInference/inference.h -nt .deps/native/libcaption_inference.dylib ]]; then
     Scripts/bootstrap.sh
 fi
+bash Scripts/bootstrap-sparkle.sh
 source Scripts/swift-env.sh
 test_args=()
 if [[ "$developer_dir" == */CommandLineTools ]]; then

@@ -7,6 +7,9 @@ if [[ ! -f .deps/native/libcaption_inference.dylib || ! -f .deps/native/libctran
       Sources/CInference/inference.h -nt .deps/native/libcaption_inference.dylib ]]; then
     Scripts/bootstrap.sh
 fi
+bash Scripts/bootstrap-sparkle.sh
+source Scripts/github-origin.sh
+repository="$(github_repository 2>/dev/null || true)"
 source Scripts/swift-env.sh
 configuration="${LOCALCAPTION_CONFIGURATION:-release}"
 swift build "${swift_args[@]}" -c "$configuration" --product LocalCaption
@@ -19,13 +22,19 @@ app="$stage/LocalCaption.app"
 mkdir -p "$app/Contents/"{MacOS,Frameworks,Resources/ThirdParty}
 cp "$build_dir/LocalCaption" "$app/Contents/MacOS/LocalCaption"
 cp .deps/native/*.dylib "$app/Contents/Frameworks/"
-cp AppResources/Info.plist "$app/Contents/"
+ditto .deps/sparkle/Sparkle.framework "$app/Contents/Frameworks/Sparkle.framework"
+cp "${LOCALCAPTION_INFO_PLIST:-AppResources/Info.plist}" "$app/Contents/Info.plist"
+if [[ -n "$repository" ]]; then
+    plutil -replace SUFeedURL -string "https://github.com/$repository/releases/latest/download/appcast.xml" \
+        "$app/Contents/Info.plist"
+fi
 cp Sources/CaptionCore/Resources/{Models,RollbackModels}.json "$app/Contents/Resources/"
 cp .deps/whisper/LICENSE "$app/Contents/Resources/ThirdParty/whisper.cpp-LICENSE.txt"
 cp .deps/sentencepiece/LICENSE "$app/Contents/Resources/ThirdParty/sentencepiece-LICENSE.txt"
 cp .deps/onnxruntime/notices/LICENSE "$app/Contents/Resources/ThirdParty/ONNXRuntime-LICENSE.txt"
 cp .deps/onnxruntime/notices/ThirdPartyNotices.txt "$app/Contents/Resources/ThirdParty/ONNXRuntime-NOTICES.txt"
 cp .deps/ctranslate2/LICENSE "$app/Contents/Resources/ThirdParty/CTranslate2-LICENSE.txt"
+cp .deps/sparkle/LICENSE "$app/Contents/Resources/ThirdParty/Sparkle-LICENSE.txt"
 cp MODEL-LICENSES.md "$app/Contents/Resources/ThirdParty/Model-Attributions.md"
 executable="$app/Contents/MacOS/LocalCaption"
 while IFS= read -r runpath; do
@@ -56,6 +65,11 @@ esac
 for library in "$app/Contents/Frameworks/"*.dylib; do
     codesign "${sign_flags[@]}" "$library"
 done
+sparkle="$app/Contents/Frameworks/Sparkle.framework"
+for helper in "$sparkle/Autoupdate" "$sparkle/Updater.app" "$sparkle/XPCServices/"*.xpc; do
+    codesign "${sign_flags[@]}" "$helper"
+done
+codesign "${sign_flags[@]}" "$sparkle"
 codesign "${sign_flags[@]}" --entitlements AppResources/LocalCaption.entitlements "$app"
 codesign --verify --deep --strict "$app"
 if [[ -e "$output_dir/LocalCaption.app" ]]; then

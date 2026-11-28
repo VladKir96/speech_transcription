@@ -22,6 +22,7 @@ enum PreferencesTab: String, CaseIterable, Identifiable {
 
 struct PreferencesView: View {
     @Bindable var model: AppModel
+    let updates: ApplicationUpdates
     @State private var removal: ModelDescriptor?
     @State private var speakerDownload: ModelDescriptor?
 
@@ -74,6 +75,26 @@ struct PreferencesView: View {
                 }
                 Picker("Appearance", selection: $model.settings.appearance) {
                     ForEach(Theme.allCases) { Text($0.title).tag($0) }
+                }
+            }
+            Section("Application Updates") {
+                LabeledContent("Version", value: updates.version)
+                LabeledContent("Build", value: updates.build)
+                LabeledContent("Last update check") {
+                    if let date = updates.lastCheck {
+                        Text(date, format: .dateTime.year().month().day().hour().minute())
+                    } else {
+                        Text("Never")
+                    }
+                }
+                Toggle("Automatically Check for Updates", isOn: Binding(
+                    get: { updates.automaticallyChecks }, set: updates.setAutomaticChecks
+                ))
+                .disabled(!updates.isConfigured)
+                Button("Check for Updates…", action: updates.check)
+                    .disabled(!updates.canCheck)
+                if let message = updates.checkMessage {
+                    Text(message).foregroundStyle(.secondary)
                 }
             }
             Section("New sessions") {

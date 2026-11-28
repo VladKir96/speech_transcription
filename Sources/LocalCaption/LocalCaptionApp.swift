@@ -17,6 +17,7 @@ struct LocalCaptionApp: App {
     @NSApplicationDelegateAdaptor(CaptionAppDelegate.self) private var delegate
     @State private var model = Self.makeModel()
     @State private var overlay = SubtitleController()
+    @State private var updates = ApplicationUpdates()
 
     private static func makeModel() -> AppModel {
         guard let path = ProcessInfo.processInfo.environment["LOCALCAPTION_DATA_DIRECTORY"] else { return AppModel() }
@@ -25,7 +26,7 @@ struct LocalCaptionApp: App {
 
     var body: some Scene {
         Window("LocalCaption", id: "main") {
-            WorkspaceView(model: model)
+            WorkspaceView(model: model, updates: updates)
                 .background(MicrophoneShortcutView(model: model,
                     shortcut: model.settings.microphoneShortcut ?? MicrophoneShortcut(), recording: model.recording))
                 .preferredColorScheme(model.settings.appearance.colorScheme)
@@ -33,6 +34,7 @@ struct LocalCaptionApp: App {
                 .task {
                     delegate.model = model
                     await model.initialize()
+                    updates.start(model: model)
                     overlay.update(model)
                 }
                 .onDisappear { model.cancelPreparation() }
@@ -46,6 +48,10 @@ struct LocalCaptionApp: App {
         .defaultSize(width: 1_180, height: 735)
         .windowToolbarStyle(.unifiedCompact)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…", action: updates.check)
+                    .disabled(!updates.canCheck)
+            }
             CommandGroup(after: .windowArrangement) {
                 Button(model.settings.overlay ? "Hide Floating Subtitles" : "Show Floating Subtitles") {
                     model.settings.overlay.toggle()
@@ -55,7 +61,7 @@ struct LocalCaptionApp: App {
         }
 
         Settings {
-            PreferencesView(model: model)
+            PreferencesView(model: model, updates: updates)
                 .preferredColorScheme(model.settings.appearance.colorScheme)
         }
     }

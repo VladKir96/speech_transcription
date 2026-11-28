@@ -2,6 +2,12 @@
 
 LocalCaption is a native Apple Silicon macOS app for live transcription of app playback and microphone speech. It presents each audio source in its own lane, saves finalized captions in SQLite, and can translate English and Russian in either direction. A floating subtitles panel can follow either lane.
 
+## Install and update
+
+Download `LocalCaption.dmg` from GitHub Releases, open it, and drag LocalCaption into **Applications**. Eject the disk image and launch the installed copy. For the first install from an existing pre-Sparkle build, quit LocalCaption and replace the app in Applications. Your settings, transcripts, and models are stored separately.
+
+Choose **LocalCaption → Check for Updates…** or open **Settings → General → Application Updates** to check for a signed update. The same section shows the version, build, last check, and optional daily automatic checks. Sparkle asks before installing. If a session is running, finish the session and use **View Update…** to install. Capture and inference work offline. [GitHub Releases](https://github.com/VladKir96/speech_transcription/releases) · [Signing and troubleshooting](RELEASE.md)
+
 ## Requirements
 
 - Apple Silicon Mac with macOS 14 or later.
@@ -22,6 +28,8 @@ open dist/LocalCaption.app
 Bootstrap verifies pinned dependency archives and uses the macOS 14 deployment target. Once the archives are cached, later builds can run offline. The packaging script creates and verifies an ad hoc signed application bundle. Open `Package.swift` in Xcode after bootstrapping to browse and build the Swift package. Use the packaged app for recording permissions.
 
 On Command Line Tools with the macOS 27 SDK and no SwiftUI macro plugin, the scripts select the installed macOS 26 SDK. Set `SDKROOT` to select another suitable SDK. Builds in a sandbox that already prevents subprocess sandboxing can set `LOCALCAPTION_SWIFTPM_NO_SANDBOX=1`.
+
+Release maintainers can run `./Scripts/release.sh 1.5.0 --build-only` to create a signed update ZIP, DMG, appcast, and checksums under `dist/release-candidates/v1.5.0`. This needs the persistent Sparkle signing key. [Release workflow](RELEASE.md)
 
 ## First run
 

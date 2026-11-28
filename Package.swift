@@ -2,8 +2,11 @@
 import Foundation
 import PackageDescription
 
-let native = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-    .appendingPathComponent(".deps/native").path
+let dependencies = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    .appendingPathComponent(".deps")
+let native = dependencies.appendingPathComponent("native").path
+let sparkle = dependencies.appendingPathComponent("sparkle").path
+let sparkleHeaders: [SwiftSetting] = [.unsafeFlags(["-F", sparkle])]
 let package = Package(
     name: "LocalCaption",
     platforms: [.macOS(.v14)],
@@ -16,9 +19,12 @@ let package = Package(
                 linkerSettings: [.unsafeFlags(["-L", native,
                     "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks",
                     "-Xlinker", "-rpath", "-Xlinker", native])]),
-        .executableTarget(name: "LocalCaption", dependencies: ["CaptionCore"]),
+        .executableTarget(name: "LocalCaption", dependencies: ["CaptionCore"], swiftSettings: sparkleHeaders,
+                          linkerSettings: [.linkedFramework("Sparkle"),
+                                           .unsafeFlags(["-F", sparkle, "-Xlinker", "-rpath", "-Xlinker", sparkle])]),
         .testTarget(name: "CaptionCoreTests", dependencies: ["CaptionCore"],
                     resources: [.process("Fixtures")]),
-        .testTarget(name: "LocalCaptionTests", dependencies: ["LocalCaption", "CaptionCore"])
+        .testTarget(name: "LocalCaptionTests", dependencies: ["LocalCaption", "CaptionCore"],
+                    swiftSettings: sparkleHeaders)
     ]
 )

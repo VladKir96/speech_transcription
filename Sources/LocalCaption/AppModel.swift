@@ -83,7 +83,11 @@ private struct CaptureFeed {
 
 @MainActor
 @Observable final class AppModel {
-    static let defaultFolder = URL.applicationSupportDirectory.appendingPathComponent("LocalCaption", isDirectory: true)
+    static let defaultFolder: URL = {
+        let identifier = Bundle.main.bundleIdentifier ?? "local.caption.macos"
+        let folder = identifier == "local.caption.macos" ? "LocalCaption" : identifier
+        return URL.applicationSupportDirectory.appendingPathComponent(folder, isDirectory: true)
+    }()
     let dataFolder: URL
     var settings: CaptionSettings {
         didSet {
@@ -139,6 +143,8 @@ private struct CaptureFeed {
     @ObservationIgnored private var pushToTalkHeld = false
     private var ready = false
     private var terminating = false
+    private var updateReserved = false
+    private var preparingUpdateExit = false
     @ObservationIgnored private var initializing = false
     @ObservationIgnored private var pausedForStorage = false
     @ObservationIgnored private var diarization: DiarizationSession?
@@ -156,7 +162,8 @@ private struct CaptureFeed {
 
     var sessionActive: Bool { [.preparing, .recording, .paused, .stopping].contains(phase) }
     var recording: Bool { phase == .recording }
-    var canStart: Bool { !terminating && !busy && !sessionActive && ready }
+    var canStart: Bool { !terminating && !updateReserved && !busy && !sessionActive && ready }
+    var canOfferUpdate: Bool { !terminating && !busy && !sessionActive && unsaved.isEmpty }
     var canStop: Bool { phase == .preparing || (!busy && (phase == .recording || phase == .paused)) }
     var sessionTitle: String { session?.title ?? "New session" }
     var activeCount: Int { lanes.values.filter { $0.status == .capturing }.count }
@@ -1141,6 +1148,27 @@ private struct CaptureFeed {
             NSWorkspace.shared.open(dataFolder)
         } catch {
             notice = error.localizedDescription
+        }
+    }
+
+    func reserveUpdate() -> Bool {
+        if updateReserved && !sessionActive && unsaved.isEmpty { return true }
+        guard canOfferUpdate else { return false }
+        updateReserved = true
+        return true
+    }
+
+    func prepareForUpdate() async -> Bool {
+        guard updateReserved, !sessionActive, unsaved.isEmpty else { return false }
+        preparingUpdateExit = true
+        return await canTerminate()
+    }
+
+    func endUpdate() {
+        updateReserved = false
+        if preparingUpdateExit {
+            preparingUpdateExit = false
+            terminating = false
         }
     }
 

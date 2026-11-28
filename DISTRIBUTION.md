@@ -18,25 +18,7 @@ If macOS asks for access again:
 
 ## Disk image
 
-To create a local disk image from a built app:
-
-```sh
-hdiutil create -volname LocalCaption -srcfolder dist/LocalCaption.app \
-  -format UDZO dist/LocalCaption.dmg
-```
-
-For public distribution, build with a Developer ID Application identity and hardened runtime:
-
-```sh
-LOCALCAPTION_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./Scripts/build-app.sh
-hdiutil create -volname LocalCaption -srcfolder dist/LocalCaption.app \
-  -format UDZO dist/LocalCaption.dmg
-codesign --sign "Developer ID Application: Your Name (TEAMID)" --timestamp dist/LocalCaption.dmg
-xcrun notarytool submit dist/LocalCaption.dmg --keychain-profile YOUR_PROFILE --wait
-xcrun stapler staple dist/LocalCaption.dmg
-```
-
-Developer ID signing and notarization require the full Xcode tools and a configured Apple developer account. The scripts apply the audio-input entitlement and verify nested code signatures.
+The release script builds the drag-and-drop installer, signs the update archive and appcast, and supports optional Developer ID signing and notarization. [Release workflow](RELEASE.md)
 
 ## Preparing the optional NLLB model
 

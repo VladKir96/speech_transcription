@@ -86,6 +86,28 @@ import Testing
 
 @Suite @MainActor
 struct SessionStartupTests {
+    @Test func updatesCannotReserveOrRestartDuringCapture() async throws {
+        let rig = try await Rig()
+        await rig.model.start()
+        #expect(rig.model.phase == .recording)
+        #expect(!rig.model.reserveUpdate())
+        #expect(!(await rig.model.prepareForUpdate()))
+        #expect(rig.system.running)
+        #expect(rig.microphone.device != nil)
+
+        await rig.model.stop()
+        #expect(rig.model.phase == .completed)
+        rig.expectStopped()
+        #expect(rig.model.reserveUpdate())
+        #expect(!rig.model.canStart)
+        await rig.model.start()
+        #expect(rig.model.phase == .completed)
+        #expect(await rig.model.prepareForUpdate())
+        #expect(rig.model.reserveUpdate()) // Sparkle calls the relaunch check again after cleanup.
+        rig.model.endUpdate()
+        #expect(rig.model.canStart)
+    }
+
     @Test(arguments: [false, true])
     func enablingMissingOrCorruptSpeakerModelsKeepsCaptureRunning(_ corrupt: Bool) async throws {
         let rig = try await Rig()

@@ -7,6 +7,7 @@ private enum WorkspaceTab: Hashable {
 
 struct WorkspaceView: View {
     @Bindable var model: AppModel
+    let updates: ApplicationUpdates
     @Environment(\.openSettings) private var openSettings
     @State private var tab: WorkspaceTab = .live
     @State private var initialized = false
@@ -36,6 +37,22 @@ struct WorkspaceView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)
                 .background(.orange.opacity(0.09))
+            }
+            if let version = updates.deferredVersion {
+                HStack(spacing: 10) {
+                    Label("LocalCaption \(version) is available.", systemImage: "arrow.down.circle")
+                    Spacer()
+                    Button("View Update…", action: updates.check)
+                        .disabled(!model.canOfferUpdate || !updates.canCheck)
+                    Button(action: updates.dismissNotice) {
+                        Image(systemName: "xmark")
+                    }.buttonStyle(.plain)
+                        .accessibilityLabel("Dismiss update notice")
+                }
+                .font(.callout)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+                .background(.bar)
             }
         }
         .background(Palette.canvas)
